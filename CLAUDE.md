@@ -8,9 +8,49 @@ for test guidelines.
 ## Overview
 
 FastAPI backend for the cuOpt EV routing application. This service was split
-out from the Express.js server previously in `cuopt-ev-routing-frontend/server`.
+out from the Express.js server previously in `cuopt-ev-routing-frontend/server/`
+and is the canonical home for the application's API surface.
 
-No database is used yet — add one only when persistence is required.
+The service is a thin proxy/BFF in front of three upstream services:
+
+- **NVIDIA cuopt** — the GPU-accelerated VRP solver. Accessed via `CUOPT_CUOPT_ENDPOINT`.
+- **LlamaStack** — LLM gateway used for chat / route explanations. Accessed via `CUOPT_LLAMASTACK_ENDPOINT`.
+- **OpenWeatherMap** — weather data for weather-aware routing. Falls back to
+  generated mock weather when no key is configured.
+
+No database is used — add one only when persistence is required.
+
+## Authentication
+
+All `/api/*` routes are protected by an HS256 JWT dependency
+(`cuopt_ev_routing_backend.auth.get_current_user`) that validates tokens issued
+by the shared `accelerator-pack-auth-service`. Set
+`CUOPT_AUTH_REQUIRE_AUTH=true` in deployed environments. The default
+(`false`) returns a synthetic admin user without checking the token —
+local-dev convenience.
+
+`/healthz` and `/readyz` are public and not gated by auth.
+
+## Architecture
+
+```
+src/cuopt_ev_routing_backend/
+├── main.py                 # FastAPI app + CORS + router registration + health probes
+├── config.py               # Pydantic Settings (CUOPT_ env prefix)
+├── auth.py                 # HS256 JWT dependency (get_current_user, require_role)
+├── api/
+│   └── routes/
+│       ├── config.py       # GET  /api/config (googleMapsApiKey)
+│       ├── cuopt.py        # /api/cuopt/{health,request,solution/{id}}, /api/cuopt-health
+│       ├── genai.py        # /api/models, /api/genai/{chat,health}
+│       └── weather.py      # /api/weather/{current,forecast,alerts,health}
+├── services/               # httpx async clients for upstream services
+│   ├── cuopt.py
+│   ├── genai.py            # + transform_to_llamastack_format / extract_response_text
+│   └── weather.py          # + generate_mock_weather
+└── schemas/
+    └── genai.py            # ChatRequestEnvelope
+```
 
 ## Quick Reference
 
@@ -26,5 +66,23 @@ RUN_INTEGRATION_TESTS=1 pytest tests/integration/ -v # integration tests
 
 ## Environment Variables
 
-Prefixed with `CUOPT_`. See `src/cuopt_ev_routing_backend/config.py` for the
-full list and defaults.
+All prefixed with `CUOPT_`. Defaults are in `src/cuopt_ev_routing_backend/config.py`.
+
+| Var | Purpose |
+|---|---|
+| `CUOPT_DEBUG` | When true, exposes `/api/docs` etc. |
+| `CUOPT_CUOPT_ENDPOINT` | Upstream NVIDIA cuopt service URL |
+| `CUOPT_LLAMASTACK_ENDPOINT` | Upstream LlamaStack URL |
+| `CUOPT_LLAMASTACK_MODEL` | Default model id (FE can override per-request) |
+| `CUOPT_GOOGLE_MAPS_API_KEY` | Returned via `/api/config` to the SPA |
+| `CUOPT_OPENWEATHERMAP_API_KEY` | Real weather provider key; empty = mock mode |
+| `CUOPT_AUTH_JWT_SECRET` | Shared HS256 secret (with auth-service) |
+| `CUOPT_AUTH_JWT_ALGORITHM` | Default `HS256` |
+| `CUOPT_AUTH_REQUIRE_AUTH` | Default `false` (dev); set to `true` in prod |
+| `CUOPT_AUTH_TOKEN_AUDIENCE` | Optional; if set, tokens must include matching `aud` claim |
+| `CUOPT_ALLOWED_ORIGINS` | Comma-separated; `*` only safe for dev |
+| `CUOPT_RATE_LIMIT` | slowapi default rate limit |
+
+The double-`CUOPT_CUOPT_*` envs come from `pydantic-settings`'s `env_prefix="CUOPT_"`
+combined with field names that already begin with `cuopt_`. The Terraform
+blueprint sets these env vars on the deployed pod.

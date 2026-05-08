@@ -6,6 +6,10 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from cuopt_ev_routing_backend import __version__
+from cuopt_ev_routing_backend.api.routes import config as config_routes
+from cuopt_ev_routing_backend.api.routes import cuopt as cuopt_routes
+from cuopt_ev_routing_backend.api.routes import genai as genai_routes
+from cuopt_ev_routing_backend.api.routes import weather as weather_routes
 from cuopt_ev_routing_backend.config import settings
 
 app = FastAPI(
@@ -25,12 +29,19 @@ app.add_middleware(
     allow_headers=["Content-Type", "Authorization"],
 )
 
+app.include_router(config_routes.router)
+app.include_router(cuopt_routes.router)
+app.include_router(genai_routes.router)
+app.include_router(weather_routes.router)
+
 
 @app.get("/healthz")
 def healthz() -> dict[str, str]:
+    """Liveness probe — public, no auth required."""
     return {"status": "ok"}
 
 
 @app.get("/readyz")
 def readyz() -> dict[str, str]:
+    """Readiness probe — public, no auth required."""
     return {"status": "ok"}
