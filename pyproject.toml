@@ -12,6 +12,11 @@ dependencies = [
     "python-multipart>=0.0.22",
     "slowapi>=0.1.9",
     "pyjwt[crypto]>=2.10.0",
+    "sqlalchemy[asyncio]>=2.0.35",
+    "aiosqlite>=0.20.0",
+    "alembic>=1.13.0",
+    "oracledb>=3.0.0",
+    "greenlet>=3.0.0",
 ]
 
 [project.optional-dependencies]

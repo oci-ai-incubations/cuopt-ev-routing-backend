@@ -47,5 +47,14 @@ class Settings(BaseSettings):
     allowed_origins: str = "*"
     rate_limit: str = "60/minute"
 
+    # Database (instance_settings table for admin-managed runtime config).
+    # ``auto`` selects oracle when oracle_connection_string is set, otherwise
+    # falls back to ``database_url`` (sqlite by default — fine for dev/tests).
+    database_type: str = "auto"
+    database_url: str = "sqlite+aiosqlite:///./cuopt.db"
+    oracle_connection_string: str = Field("", json_schema_extra={"sensitive": True})
+    oracle_user: str = ""
+    oracle_password: str = Field("", json_schema_extra={"sensitive": True})  # noqa: S105
+
 
 settings = Settings()
