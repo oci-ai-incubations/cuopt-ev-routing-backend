@@ -10,6 +10,7 @@ arrays; LlamaStack expects ``input`` + ``instructions``.
 import httpx
 
 from cuopt_ev_routing_backend.config import settings
+from cuopt_ev_routing_backend.services._client import internal_client
 
 _TIMEOUT = httpx.Timeout(60.0, connect=5.0)
 
@@ -71,7 +72,7 @@ def extract_response_text(data: dict) -> str:
 
 async def list_models() -> tuple[int, dict]:
     """Fetch /v1/models from LlamaStack and filter to LLM models only."""
-    async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
+    async with internal_client(_TIMEOUT) as client:
         resp = await client.get(f"{settings.llamastack_endpoint}/v1/models")
         if resp.status_code != 200:
             return resp.status_code, {"error": "Failed to fetch models"}
@@ -87,7 +88,7 @@ async def list_models() -> tuple[int, dict]:
 async def respond(chat_request: dict) -> tuple[int, dict]:
     """Send a chat request to LlamaStack and return the parsed response."""
     payload = transform_to_llamastack_format(chat_request)
-    async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
+    async with internal_client(_TIMEOUT) as client:
         resp = await client.post(
             f"{settings.llamastack_endpoint}/v1/responses",
             json=payload,
@@ -110,7 +111,7 @@ async def respond(chat_request: dict) -> tuple[int, dict]:
 
 async def health() -> tuple[int, dict]:
     """Probe LlamaStack /v1/models as a connectivity check."""
-    async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
+    async with internal_client(_TIMEOUT) as client:
         resp = await client.get(f"{settings.llamastack_endpoint}/v1/models")
     if resp.status_code == 200:
         return 200, {

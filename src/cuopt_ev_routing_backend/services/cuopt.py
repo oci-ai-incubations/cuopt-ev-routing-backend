@@ -5,6 +5,7 @@
 import httpx
 
 from cuopt_ev_routing_backend.config import settings
+from cuopt_ev_routing_backend.services._client import internal_client
 
 _TIMEOUT = httpx.Timeout(30.0, connect=5.0)
 
@@ -14,14 +15,14 @@ async def health() -> tuple[int, str]:
 
     Returns ``(status_code, body)`` so the caller can pass through the response.
     """
-    async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
+    async with internal_client(_TIMEOUT) as client:
         resp = await client.get(f"{settings.cuopt_endpoint}/cuopt/health")
         return resp.status_code, resp.text
 
 
 async def submit(payload: dict) -> tuple[int, dict]:
     """Submit an optimization request to the upstream cuopt service."""
-    async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
+    async with internal_client(_TIMEOUT) as client:
         resp = await client.post(
             f"{settings.cuopt_endpoint}/cuopt/request",
             json=payload,
@@ -31,6 +32,6 @@ async def submit(payload: dict) -> tuple[int, dict]:
 
 async def solution(req_id: str) -> tuple[int, dict]:
     """Fetch a solution by request id."""
-    async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
+    async with internal_client(_TIMEOUT) as client:
         resp = await client.get(f"{settings.cuopt_endpoint}/cuopt/solution/{req_id}")
         return resp.status_code, resp.json()

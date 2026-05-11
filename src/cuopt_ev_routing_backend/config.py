@@ -21,6 +21,11 @@ class Settings(BaseSettings):
     llamastack_endpoint: str = "http://localhost:8321"
     llamastack_model: str = ""
 
+    # TLS verification for outbound httpx calls to in-cluster services.
+    # Default True for prod safety. Set CUOPT_TLS_VERIFY=false when the
+    # in-cluster cuopt / llamastack services present self-signed certs.
+    tls_verify: bool = True
+
     # Runtime config exposed to the frontend
     google_maps_api_key: str = Field("", json_schema_extra={"sensitive": True})
 
