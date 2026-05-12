@@ -32,19 +32,19 @@ class Settings(BaseSettings):
     # Weather provider
     openweathermap_api_key: str = Field("", json_schema_extra={"sensitive": True})
 
-    # Legacy admin credentials (Express had a /api/auth/login endpoint that used
-    # these — we no longer expose login here; auth-service handles it. Kept so
-    # operators who still set these envs do not get errors).
-    admin_username: str = ""
-    admin_password: str = Field("", json_schema_extra={"sensitive": True})  # noqa: S105 — empty default
-
-    # Auth-service JWT validation (HS256)
+    # Auth-service JWT validation (HS256). Fail-closed defaults: production
+    # deployments must opt out explicitly. main._validate_safety() rejects
+    # auth_require_auth=False unless debug=True, and rejects auth_require_auth=True
+    # with an empty secret.
     auth_jwt_secret: str = Field("", json_schema_extra={"sensitive": True})  # noqa: S105 — empty default
     auth_jwt_algorithm: str = "HS256"
-    auth_require_auth: bool = False
+    auth_require_auth: bool = True
     auth_token_audience: str | None = None
 
-    allowed_origins: str = "*"
+    # CORS. Empty default forces operators to set CUOPT_ALLOWED_ORIGINS explicitly.
+    # main.py disables allow_credentials when any wildcard ("*") is in the list —
+    # the combination is rejected by the CORS spec and silently broken in browsers.
+    allowed_origins: str = ""
     rate_limit: str = "60/minute"
 
     # Database (instance_settings table for admin-managed runtime config).

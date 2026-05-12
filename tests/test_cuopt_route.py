@@ -73,24 +73,3 @@ def test_cuopt_solution_upstream_error(client, httpx_mock):
     assert resp.status_code == 500
 
 
-def test_cuopt_health_alt_connected(client, httpx_mock):
-    httpx_mock.add_response(
-        url=f"{CUOPT}/cuopt/health", method="GET", json={"status": "ok"}, status_code=200
-    )
-    resp = client.get("/api/cuopt-health")
-    assert resp.status_code == 200
-    assert resp.json() == {"status": "connected", "endpoint": CUOPT}
-
-
-def test_cuopt_health_alt_unavailable(client, httpx_mock):
-    httpx_mock.add_response(url=f"{CUOPT}/cuopt/health", method="GET", status_code=500, text="bad")
-    resp = client.get("/api/cuopt-health")
-    assert resp.status_code == 503
-    assert resp.json()["status"] == "unavailable"
-
-
-def test_cuopt_health_alt_disconnected(client, httpx_mock):
-    httpx_mock.add_exception(httpx.ConnectError("boom"), url=f"{CUOPT}/cuopt/health", method="GET")
-    resp = client.get("/api/cuopt-health")
-    assert resp.status_code == 503
-    assert resp.json()["status"] == "disconnected"

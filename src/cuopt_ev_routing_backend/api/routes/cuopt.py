@@ -9,7 +9,6 @@ from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse, Response
 
 from cuopt_ev_routing_backend.auth import get_current_user
-from cuopt_ev_routing_backend.config import settings
 from cuopt_ev_routing_backend.services import cuopt as cuopt_service
 
 router = APIRouter(prefix="/api", tags=["cuopt"], dependencies=[Depends(get_current_user)])
@@ -53,19 +52,6 @@ async def cuopt_solution(req_id: str) -> JSONResponse:
             {"error": "cuOPT solution failed", "message": str(exc)},
             status_code=500,
         )
-
-
-@router.get("/cuopt-health")
-async def cuopt_health_alt() -> JSONResponse:
-    """Legacy alternate health endpoint kept for FE backward compatibility."""
-    try:
-        status_code, _ = await cuopt_service.health()
-    except httpx.HTTPError as exc:
-        return JSONResponse({"status": "disconnected", "error": str(exc)}, status_code=503)
-
-    if status_code == 200:
-        return JSONResponse({"status": "connected", "endpoint": settings.cuopt_endpoint})
-    return JSONResponse({"status": "unavailable"}, status_code=503)
 
 
 __all__: list[Any] = ["router"]

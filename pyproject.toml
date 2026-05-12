@@ -66,6 +66,10 @@ markers = [
 [tool.coverage.run]
 source = ["cuopt_ev_routing_backend"]
 omit = ["tests/*"]
+# Required to attribute coverage across async + threadpool boundaries — without
+# this, FastAPI's anyio-driven sync endpoints + sqlalchemy's greenlet bridge
+# silently drop line hits and per-module coverage under-reports by ~20 points.
+concurrency = ["thread", "greenlet"]
 
 [tool.coverage.report]
 fail_under = 80

@@ -23,6 +23,10 @@ from pathlib import Path
 _TEST_DB_PATH = Path(tempfile.gettempdir()) / f"cuopt-test-{os.getpid()}.db"
 os.environ.setdefault("CUOPT_DATABASE_TYPE", "sqlite")
 os.environ.setdefault("CUOPT_DATABASE_URL", f"sqlite+aiosqlite:///{_TEST_DB_PATH}")
+# Production defaults are fail-closed (auth required + non-wildcard origins).
+# Tests exercise the synthetic-admin path so we explicitly opt out + flag dev.
+os.environ.setdefault("CUOPT_AUTH_REQUIRE_AUTH", "false")
+os.environ.setdefault("CUOPT_DEBUG", "true")
 
 import pytest  # noqa: E402 — must follow env setup above
 from fastapi.testclient import TestClient  # noqa: E402
