@@ -71,5 +71,3 @@ def test_cuopt_solution_upstream_error(client, httpx_mock):
     )
     resp = client.get("/api/cuopt/solution/req-x")
     assert resp.status_code == 500
-
-

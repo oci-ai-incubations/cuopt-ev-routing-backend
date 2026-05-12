@@ -39,9 +39,7 @@ def _validate_safety() -> None:
             "Refusing to start (would serve /api/* unauthenticated in production)."
         )
     if settings.auth_require_auth and not settings.auth_jwt_secret:
-        raise RuntimeError(
-            "CUOPT_AUTH_REQUIRE_AUTH=true requires CUOPT_AUTH_JWT_SECRET to be set."
-        )
+        raise RuntimeError("CUOPT_AUTH_REQUIRE_AUTH=true requires CUOPT_AUTH_JWT_SECRET to be set.")
 
 
 _validate_safety()
