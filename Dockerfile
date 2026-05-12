@@ -8,6 +8,10 @@ COPY requirements.txt pyproject.toml ./
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY src/ src/
+# Alembic migrations + config — needed at runtime; init_db() runs
+# `alembic upgrade head` from WORKDIR (/app) on FastAPI startup.
+COPY alembic.ini ./
+COPY alembic/ alembic/
 
 RUN pip install --no-cache-dir --no-deps .
 

@@ -142,11 +142,3 @@ jobs:
             $REGISTRY/${{ env.IMAGE_NAME }}:${{ steps.version.outputs.value }}
           docker push $REGISTRY/${{ env.IMAGE_NAME }}:${{ env.SHORT_SHA }}
           docker push $REGISTRY/${{ env.IMAGE_NAME }}:${{ steps.version.outputs.value }}
-
-      - name: Tag and push latest
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        run: |
-          REGISTRY="iad.ocir.io/${{ secrets.OCI_TENANCY_NAMESPACE }}"
-          docker tag ${{ env.IMAGE_NAME }}:${{ env.SHORT_SHA }} \
-            $REGISTRY/${{ env.IMAGE_NAME }}:latest
-          docker push $REGISTRY/${{ env.IMAGE_NAME }}:latest

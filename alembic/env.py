@@ -1,0 +1,89 @@
+# Copyright (c) 2026, Oracle and/or its affiliates.
+# Licensed under the Universal Permissive License v 1.0 as shown at https://oss.oracle.com/licenses/upl.
+"""Alembic environment.
+
+Migrations honor the runtime application config
+(``CUOPT_DATABASE_TYPE`` + ``CUOPT_DATABASE_URL`` / ``CUOPT_ORACLE_*`` envs)
+rather than the static ``sqlalchemy.url`` in ``alembic.ini``. This keeps the
+migration target in lock-step with what the running app talks to.
+"""
+
+import asyncio
+from logging.config import fileConfig
+
+from alembic import context
+from sqlalchemy import pool
+from sqlalchemy.ext.asyncio import create_async_engine
+
+from cuopt_ev_routing_backend.config import settings
+from cuopt_ev_routing_backend.models import Base
+
+config = context.config
+if config.config_file_name is not None:
+    fileConfig(config.config_file_name)
+
+target_metadata = Base.metadata
+
+
+def _resolved_db_type() -> str:
+    db_type = settings.database_type
+    if db_type == "auto":
+        if settings.oracle_connection_string:
+            return "oracle"
+        if "postgresql" in settings.database_url:
+            return "postgres"
+        return "sqlite"
+    return db_type
+
+
+def _runtime_url_and_connect_args() -> tuple[str, dict]:
+    db_type = _resolved_db_type()
+    if db_type == "oracle":
+        return (
+            "oracle+oracledb://",
+            {
+                "user": settings.oracle_user,
+                "password": settings.oracle_password,
+                "dsn": settings.oracle_connection_string,
+            },
+        )
+    return (settings.database_url, {})
+
+
+_runtime_url, _runtime_connect_args = _runtime_url_and_connect_args()
+config.set_main_option("sqlalchemy.url", _runtime_url)
+
+
+def run_migrations_offline() -> None:
+    """Offline mode — emit SQL against the runtime URL."""
+    context.configure(url=_runtime_url, target_metadata=target_metadata, literal_binds=True)
+    with context.begin_transaction():
+        context.run_migrations()
+
+
+def do_run_migrations(connection) -> None:  # noqa: ANN001 — alembic supplies Connection
+    context.configure(connection=connection, target_metadata=target_metadata)
+    with context.begin_transaction():
+        context.run_migrations()
+
+
+async def run_async_migrations() -> None:
+    """Online async mode — build a fresh async engine from runtime settings."""
+    connectable = create_async_engine(
+        _runtime_url,
+        poolclass=pool.NullPool,
+        connect_args=_runtime_connect_args,
+    )
+    async with connectable.connect() as connection:
+        await connection.run_sync(do_run_migrations)
+    await connectable.dispose()
+
+
+def run_migrations_online() -> None:
+    asyncio.run(run_async_migrations())
+
+
+if context.is_offline_mode():
+    run_migrations_offline()
+else:
+    run_migrations_online()
