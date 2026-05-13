@@ -15,7 +15,7 @@ from cuopt_ev_routing_backend.schemas.genai import ChatRequestEnvelope
 from cuopt_ev_routing_backend.services import genai as genai_service
 from cuopt_ev_routing_backend.services import instance_settings as instance_settings_service
 
-router = APIRouter(prefix="/api", tags=["genai"], dependencies=[Depends(get_current_user)])
+router = APIRouter(prefix="/api", tags=["GenAI"], dependencies=[Depends(get_current_user)])
 
 
 async def _genai_enabled_or_404(db: AsyncSession) -> None:
@@ -25,7 +25,22 @@ async def _genai_enabled_or_404(db: AsyncSession) -> None:
         raise HTTPException(status_code=404, detail="GenAI is disabled")
 
 
-@router.get("/models")
+@router.get(
+    "/models",
+    summary="List available LLM models",
+    description=(
+        "Fetch `/v1/models` from the upstream LlamaStack and filter the result to "
+        "entries whose `custom_metadata.model_type == 'llm'`. Returns 404 when an "
+        "admin has disabled the GenAI feature flag."
+    ),
+    tags=["GenAI"],
+    responses={
+        200: {"description": "Filtered list of LLM models"},
+        401: {"description": "Token missing, invalid, or expired"},
+        404: {"description": "GenAI feature flag is disabled"},
+        503: {"description": "Upstream LlamaStack is unreachable"},
+    },
+)
 async def list_models(db: Annotated[AsyncSession, Depends(get_db)]) -> JSONResponse:
     """List LLM models from LlamaStack."""
     await _genai_enabled_or_404(db)
@@ -39,7 +54,25 @@ async def list_models(db: Annotated[AsyncSession, Depends(get_db)]) -> JSONRespo
         )
 
 
-@router.post("/genai/chat")
+@router.post(
+    "/genai/chat",
+    summary="Send a chat request via LlamaStack",
+    description=(
+        "Transform the SPA's `chatRequest` envelope (role/content message array) "
+        "into a LlamaStack `/v1/responses` payload, forward it, and return the "
+        "response in the shape the SPA expects (`chatResponse.text`, "
+        "`usageMetadata.{inputTokenCount, outputTokenCount}`). Returns 404 when "
+        "an admin has disabled the GenAI feature flag."
+    ),
+    tags=["GenAI"],
+    responses={
+        200: {"description": "Chat response and token usage"},
+        401: {"description": "Token missing, invalid, or expired"},
+        404: {"description": "GenAI feature flag is disabled"},
+        422: {"description": "Validation error on the request body"},
+        500: {"description": "Upstream LlamaStack request failed"},
+    },
+)
 async def genai_chat(
     envelope: ChatRequestEnvelope,
     db: Annotated[AsyncSession, Depends(get_db)],
@@ -56,7 +89,23 @@ async def genai_chat(
         )
 
 
-@router.get("/genai/health")
+@router.get(
+    "/genai/health",
+    summary="Probe upstream LlamaStack",
+    description=(
+        "Probe LlamaStack `/v1/models` as a connectivity check. Returns "
+        "`{status: connected, endpoint, defaultModel}` on success or "
+        "`{status: unavailable | disconnected}` otherwise. Returns 404 when an "
+        "admin has disabled the GenAI feature flag."
+    ),
+    tags=["GenAI"],
+    responses={
+        200: {"description": "LlamaStack is reachable"},
+        401: {"description": "Token missing, invalid, or expired"},
+        404: {"description": "GenAI feature flag is disabled"},
+        503: {"description": "Upstream LlamaStack is unreachable"},
+    },
+)
 async def genai_health(db: Annotated[AsyncSession, Depends(get_db)]) -> JSONResponse:
     """Probe LlamaStack /v1/models as a connectivity check."""
     await _genai_enabled_or_404(db)

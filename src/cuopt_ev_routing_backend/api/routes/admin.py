@@ -24,7 +24,7 @@ from cuopt_ev_routing_backend.services import instance_settings as instance_sett
 
 router = APIRouter(
     prefix="/api/admin",
-    tags=["admin"],
+    tags=["Admin"],
     dependencies=[Depends(require_role("admin"))],
 )
 
@@ -42,7 +42,22 @@ def _to_response(row) -> InstanceConfigResponse:  # noqa: ANN001 — InstanceSet
     )
 
 
-@router.get("/config", response_model=InstanceConfigResponse)
+@router.get(
+    "/config",
+    response_model=InstanceConfigResponse,
+    summary="Get instance settings",
+    description=(
+        "Return the singleton `instance_settings` row that the SPA's AdminPanel "
+        'reads. Sensitive values are redacted to `***` when set and `""` when '
+        "unset, so the response is safe to render directly in the UI."
+    ),
+    tags=["Admin"],
+    responses={
+        200: {"description": "Current instance settings (sensitive values redacted)"},
+        401: {"description": "Token missing, invalid, or expired"},
+        403: {"description": "Caller is not an admin"},
+    },
+)
 async def get_config(
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> InstanceConfigResponse:
@@ -51,7 +66,24 @@ async def get_config(
     return _to_response(row)
 
 
-@router.patch("/config/api-keys", response_model=InstanceConfigResponse)
+@router.patch(
+    "/config/api-keys",
+    response_model=InstanceConfigResponse,
+    summary="Update instance API keys",
+    description=(
+        "Patch the Google Maps and OpenWeatherMap API keys on the singleton "
+        "`instance_settings` row. Each field follows three-way semantics: absent "
+        "= keep current, empty string = clear, any other value = replace. "
+        "`updated_by` is set to the admin's email."
+    ),
+    tags=["Admin"],
+    responses={
+        200: {"description": "Updated instance settings (sensitive values redacted)"},
+        401: {"description": "Token missing, invalid, or expired"},
+        403: {"description": "Caller is not an admin"},
+        422: {"description": "Validation error on the request body"},
+    },
+)
 async def patch_api_keys(
     payload: ApiKeysUpdate,
     db: Annotated[AsyncSession, Depends(get_db)],
@@ -66,7 +98,23 @@ async def patch_api_keys(
     return _to_response(row)
 
 
-@router.patch("/config/features", response_model=InstanceConfigResponse)
+@router.patch(
+    "/config/features",
+    response_model=InstanceConfigResponse,
+    summary="Update instance feature flags",
+    description=(
+        "Toggle the GenAI chat, weather, and SSO feature flags on the singleton "
+        "`instance_settings` row. Absent fields are left unchanged. `updated_by` "
+        "is set to the admin's email."
+    ),
+    tags=["Admin"],
+    responses={
+        200: {"description": "Updated instance settings (sensitive values redacted)"},
+        401: {"description": "Token missing, invalid, or expired"},
+        403: {"description": "Caller is not an admin"},
+        422: {"description": "Validation error on the request body"},
+    },
+)
 async def patch_features(
     payload: FeatureFlagsUpdate,
     db: Annotated[AsyncSession, Depends(get_db)],

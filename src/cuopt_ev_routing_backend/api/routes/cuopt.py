@@ -11,10 +11,24 @@ from fastapi.responses import JSONResponse, Response
 from cuopt_ev_routing_backend.auth import get_current_user
 from cuopt_ev_routing_backend.services import cuopt as cuopt_service
 
-router = APIRouter(prefix="/api", tags=["cuopt"], dependencies=[Depends(get_current_user)])
+router = APIRouter(prefix="/api", tags=["cuOpt"], dependencies=[Depends(get_current_user)])
 
 
-@router.get("/cuopt/health")
+@router.get(
+    "/cuopt/health",
+    summary="Probe upstream cuOpt service",
+    description=(
+        "Forward the upstream NVIDIA cuOpt service's `/cuopt/health` response "
+        "verbatim — status code and JSON body. Returns 503 with "
+        "`{status: disconnected, error}` when the upstream is unreachable."
+    ),
+    tags=["cuOpt"],
+    responses={
+        200: {"description": "Upstream cuOpt is reachable"},
+        401: {"description": "Token missing, invalid, or expired"},
+        503: {"description": "Upstream cuOpt is unreachable"},
+    },
+)
 async def cuopt_health() -> Response:
     """Pass through cuopt /cuopt/health (status + raw body)."""
     try:
@@ -27,7 +41,21 @@ async def cuopt_health() -> Response:
         )
 
 
-@router.post("/cuopt/request")
+@router.post(
+    "/cuopt/request",
+    summary="Submit a cuOpt optimization request",
+    description=(
+        "Forward the request body to the upstream cuOpt `/cuopt/request` endpoint "
+        "and return the upstream response and status. The upstream typically "
+        "returns a request id which can be polled via `GET /cuopt/solution/{req_id}`."
+    ),
+    tags=["cuOpt"],
+    responses={
+        200: {"description": "Upstream cuOpt response"},
+        401: {"description": "Token missing, invalid, or expired"},
+        500: {"description": "Upstream cuOpt request failed"},
+    },
+)
 async def cuopt_request(request: Request) -> JSONResponse:
     """Submit an optimization request to upstream cuopt."""
     payload = await request.json()
@@ -41,7 +69,21 @@ async def cuopt_request(request: Request) -> JSONResponse:
         )
 
 
-@router.get("/cuopt/solution/{req_id}")
+@router.get(
+    "/cuopt/solution/{req_id}",
+    summary="Fetch a cuOpt solution",
+    description=(
+        "Forward to the upstream cuOpt `/cuopt/solution/{req_id}` endpoint and "
+        "return the solution payload and status. Used by the SPA to poll for "
+        "completion of an optimization request."
+    ),
+    tags=["cuOpt"],
+    responses={
+        200: {"description": "Solution payload"},
+        401: {"description": "Token missing, invalid, or expired"},
+        500: {"description": "Upstream cuOpt solution lookup failed"},
+    },
+)
 async def cuopt_solution(req_id: str) -> JSONResponse:
     """Fetch a solution by upstream request id."""
     try:
