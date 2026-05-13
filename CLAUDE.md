@@ -22,12 +22,15 @@ No database is used — add one only when persistence is required.
 
 ## Authentication
 
-All `/api/*` routes are protected by an HS256 JWT dependency
-(`cuopt_ev_routing_backend.auth.get_current_user`) that validates tokens issued
-by the shared `accelerator-pack-auth-service`. Set
+All `/api/*` routes are protected by an RS256 JWT dependency
+(`cuopt_ev_routing_backend.auth.get_current_user`) that validates tokens
+issued by the shared `accelerator-pack-auth-service`. Verification is local
+— the BE fetches each trusted issuer's JWKS at
+`{issuer}/.well-known/jwks.json`, caches it for `CUOPT_AUTH_JWKS_CACHE_TTL`
+seconds, and looks the token's `kid` header up against the cache. Set
 `CUOPT_AUTH_REQUIRE_AUTH=true` in deployed environments. The default
-(`false`) returns a synthetic admin user without checking the token —
-local-dev convenience.
+(`true` in production; `false` only when `CUOPT_DEBUG=true`) returns a
+synthetic admin user without checking the token — local-dev convenience.
 
 `/healthz` and `/readyz` are public and not gated by auth.
 
@@ -37,7 +40,8 @@ local-dev convenience.
 src/cuopt_ev_routing_backend/
 ├── main.py                 # FastAPI app + CORS + router registration + health probes
 ├── config.py               # Pydantic Settings (CUOPT_ env prefix)
-├── auth.py                 # HS256 JWT dependency (get_current_user, require_role)
+├── auth.py                 # RS256 JWT dependency (get_current_user, require_role)
+├── jwks.py                 # Per-issuer JWKS fetch + cache (hardened https-only opener)
 ├── api/
 │   └── routes/
 │       ├── config.py       # GET  /api/config (googleMapsApiKey)
@@ -76,9 +80,9 @@ All prefixed with `CUOPT_`. Defaults are in `src/cuopt_ev_routing_backend/config
 | `CUOPT_LLAMASTACK_MODEL` | Default model id (FE can override per-request) |
 | `CUOPT_GOOGLE_MAPS_API_KEY` | Returned via `/api/config` to the SPA |
 | `CUOPT_OPENWEATHERMAP_API_KEY` | Real weather provider key; empty = mock mode |
-| `CUOPT_AUTH_JWT_SECRET` | Shared HS256 secret (with auth-service) |
-| `CUOPT_AUTH_JWT_ALGORITHM` | Default `HS256` |
-| `CUOPT_AUTH_REQUIRE_AUTH` | Default `false` (dev); set to `true` in prod |
+| `CUOPT_AUTH_TRUSTED_ISSUERS` | Comma-separated allowlist of trusted issuer URLs (each must be `https://`). Tokens carrying an `iss` claim outside this list are rejected before any network IO. |
+| `CUOPT_AUTH_JWKS_CACHE_TTL` | JWKS cache TTL in seconds (default `3600`). A kid-miss within the TTL triggers exactly one refresh. |
+| `CUOPT_AUTH_REQUIRE_AUTH` | Default `true` in production; allowed `false` only when `CUOPT_DEBUG=true` |
 | `CUOPT_AUTH_TOKEN_AUDIENCE` | Optional; if set, tokens must include matching `aud` claim |
 | `CUOPT_ALLOWED_ORIGINS` | Comma-separated; `*` only safe for dev |
 | `CUOPT_RATE_LIMIT` | slowapi default rate limit |

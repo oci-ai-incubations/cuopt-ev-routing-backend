@@ -14,9 +14,9 @@ def test_validate_safety_passes_with_synthetic_admin_in_debug(monkeypatch):
     _validate_safety()
 
 
-def test_validate_safety_passes_with_auth_on_and_secret_set(monkeypatch):
+def test_validate_safety_passes_with_auth_on_and_trusted_issuers_set(monkeypatch):
     monkeypatch.setattr(settings, "auth_require_auth", True)
-    monkeypatch.setattr(settings, "auth_jwt_secret", "x" * 32)
+    monkeypatch.setattr(settings, "auth_trusted_issuers", "https://issuer.test/auth")
     monkeypatch.setattr(settings, "debug", False)
     _validate_safety()
 
@@ -28,8 +28,15 @@ def test_validate_safety_refuses_auth_off_in_production(monkeypatch):
         _validate_safety()
 
 
-def test_validate_safety_refuses_auth_on_with_empty_secret(monkeypatch):
+def test_validate_safety_refuses_auth_on_with_empty_trusted_issuers(monkeypatch):
     monkeypatch.setattr(settings, "auth_require_auth", True)
-    monkeypatch.setattr(settings, "auth_jwt_secret", "")
-    with pytest.raises(RuntimeError, match="CUOPT_AUTH_JWT_SECRET to be set"):
+    monkeypatch.setattr(settings, "auth_trusted_issuers", "")
+    with pytest.raises(RuntimeError, match="CUOPT_AUTH_TRUSTED_ISSUERS to be set"):
+        _validate_safety()
+
+
+def test_validate_safety_refuses_auth_on_with_whitespace_only_trusted_issuers(monkeypatch):
+    monkeypatch.setattr(settings, "auth_require_auth", True)
+    monkeypatch.setattr(settings, "auth_trusted_issuers", "   ")
+    with pytest.raises(RuntimeError, match="CUOPT_AUTH_TRUSTED_ISSUERS to be set"):
         _validate_safety()

@@ -31,16 +31,18 @@ def _validate_safety() -> None:
     - Auth disabled outside dev: a missing CUOPT_AUTH_REQUIRE_AUTH env in
       production would silently fall back to the synthetic-admin path and
       serve /api/* unauthenticated.
-    - Auth enabled with no secret: legible 401-and-misconfigured errors
-      mid-request are worse than refusing to start.
+    - Auth enabled with no trusted issuers: legible 401-and-misconfigured
+      errors mid-request are worse than refusing to start.
     """
     if not settings.auth_require_auth and not settings.debug:
         raise RuntimeError(
             "CUOPT_AUTH_REQUIRE_AUTH=false is only permitted when CUOPT_DEBUG=true. "
             "Refusing to start (would serve /api/* unauthenticated in production)."
         )
-    if settings.auth_require_auth and not settings.auth_jwt_secret:
-        raise RuntimeError("CUOPT_AUTH_REQUIRE_AUTH=true requires CUOPT_AUTH_JWT_SECRET to be set.")
+    if settings.auth_require_auth and not settings.auth_trusted_issuers.strip():
+        raise RuntimeError(
+            "CUOPT_AUTH_REQUIRE_AUTH=true requires CUOPT_AUTH_TRUSTED_ISSUERS to be set."
+        )
 
 
 _validate_safety()
@@ -82,7 +84,7 @@ _OPENAPI_DESCRIPTION = (
     "FastAPI backend for the cuOpt EV routing accelerator pack. Proxies the "
     "upstream NVIDIA cuOpt VRP solver, LlamaStack chat, and OpenWeatherMap, and "
     "owns the admin-managed `instance_settings` runtime configuration. All "
-    "`/api/*` routes require an HS256 JWT issued by `accelerator-pack-auth-service`."
+    "`/api/*` routes require an RS256 JWT issued by `accelerator-pack-auth-service`."
 )
 
 

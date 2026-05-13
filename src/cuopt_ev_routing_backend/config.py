@@ -32,12 +32,13 @@ class Settings(BaseSettings):
     # Weather provider
     openweathermap_api_key: str = Field("", json_schema_extra={"sensitive": True})
 
-    # Auth-service JWT validation (HS256). Fail-closed defaults: production
-    # deployments must opt out explicitly. main._validate_safety() rejects
+    # Auth-service JWT validation (RS256 via JWKS). Tokens are verified locally
+    # by fetching each trusted issuer's JWKS and looking the token's `kid` up
+    # against the cache. Fail-closed defaults: main._validate_safety() rejects
     # auth_require_auth=False unless debug=True, and rejects auth_require_auth=True
-    # with an empty secret.
-    auth_jwt_secret: str = Field("", json_schema_extra={"sensitive": True})  # noqa: S105 — empty default
-    auth_jwt_algorithm: str = "HS256"
+    # with an empty trusted-issuers list.
+    auth_trusted_issuers: str = ""
+    auth_jwks_cache_ttl: int = 3600
     auth_require_auth: bool = True
     auth_token_audience: str | None = None
 
