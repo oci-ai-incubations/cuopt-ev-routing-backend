@@ -37,7 +37,7 @@ def auth_enabled(monkeypatch) -> Iterator[None]:
     monkeypatch.setattr(settings, "auth_require_auth", True)
     monkeypatch.setattr(settings, "auth_trusted_issuers", TEST_ISSUER)
     monkeypatch.setattr(settings, "auth_jwks_cache_ttl", 3600)
-    monkeypatch.setattr(settings, "auth_token_audience", None)
+    monkeypatch.setattr(settings, "auth_token_audience", "cuopt")
     install_jwks_stub(monkeypatch)
     yield
 

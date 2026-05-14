@@ -5,8 +5,18 @@
 Pack BEs verify auth-service-minted tokens by:
 
 1. reading the unverified ``iss`` claim
-2. resolving the issuer's JWKS URL by appending ``/.well-known/jwks.json``
-3. caching the public keys (keyed by kid) for ``auth_jwks_cache_ttl`` seconds
+2. resolving the issuer's JWKS URL via the OIDC discovery doc at
+   ``{issuer}/.well-known/openid-configuration`` (``jwks_uri`` field). The
+   discovered URL is cached per issuer for ``auth_jwks_cache_ttl`` seconds.
+3. fetching the JWKS at the discovered URL and caching the public keys
+   (keyed by kid) for ``auth_jwks_cache_ttl`` seconds
+
+Discovery is required because federated IdPs publish JWKS at non-standard
+paths — Oracle IDCS uses ``/admin/v1/SigningCert/jwk``, Microsoft Entra uses
+``/{tenant}/discovery/v2.0/keys``. Hardcoding ``/.well-known/jwks.json`` only
+works for auth-service. The operator-supplied in-cluster override
+(``auth_local_jwks_url``) bypasses discovery — operators who know the exact
+URL don't need a roundtrip.
 
 On a kid cache miss we refresh the JWKS once before failing — gives a graceful
 window for upstream key rotation. Untrusted issuers are rejected before the
@@ -139,11 +149,16 @@ class _IssuerCache:
         self._lock = threading.Lock()
         # issuer -> (fetched_at_epoch, {kid: RSAPublicKey})
         self._entries: dict[str, tuple[float, dict[str, RSAPublicKey]]] = {}
+        # issuer -> (fetched_at_epoch, jwks_uri) — discovery doc cache.
+        # Separate from key cache so a kid-miss refresh doesn't re-fetch the
+        # discovery doc; the URL doesn't change between rotations.
+        self._jwks_uris: dict[str, tuple[float, str]] = {}
 
     def reset(self) -> None:
         """Clear all cached JWKS — exposed for tests."""
         with self._lock:
             self._entries.clear()
+            self._jwks_uris.clear()
 
     def get_key(self, issuer: str, kid: str) -> RSAPublicKey:
         """Return the public key for (issuer, kid).
@@ -170,18 +185,59 @@ class _IssuerCache:
                 return keys[kid]
             raise JwksError(f"kid {kid!r} not in JWKS for issuer {issuer!r}")
 
+    def _discover_jwks_uri(self, issuer: str) -> str:
+        """Fetch ``{issuer}/.well-known/openid-configuration`` and return ``jwks_uri``.
+
+        Cached per-issuer for ``auth_jwks_cache_ttl`` seconds. Caller must hold
+        ``self._lock`` (the only caller is ``_fetch_keys``, which is itself
+        invoked under the lock). On any failure raises ``JwksError`` with the
+        issuer in the message — operators need to know which discovery URL
+        broke when multiple issuers are configured.
+        """
+        now = time.monotonic()
+        cached = self._jwks_uris.get(issuer)
+        ttl = settings.auth_jwks_cache_ttl
+        if cached is not None and now - cached[0] <= ttl:
+            return cached[1]
+
+        url = issuer.rstrip("/") + "/.well-known/openid-configuration"
+        try:
+            with _opener.open(url, timeout=_FETCH_TIMEOUT_SECONDS) as resp:
+                body = resp.read()
+        except ssl.SSLError as exc:
+            raise JwksError(f"OIDC discovery failed for {issuer}: TLS error: {exc}") from exc
+        except (URLError, TimeoutError) as exc:
+            raise JwksError(f"OIDC discovery failed for {issuer}: {exc}") from exc
+
+        try:
+            doc = json.loads(body)
+        except json.JSONDecodeError as exc:
+            raise JwksError(f"OIDC discovery failed for {issuer}: invalid JSON: {exc}") from exc
+
+        jwks_uri = doc.get("jwks_uri")
+        if not isinstance(jwks_uri, str) or not jwks_uri:
+            raise JwksError(f"OIDC discovery failed for {issuer}: missing jwks_uri")
+        if urlsplit(jwks_uri).scheme != "https":
+            raise JwksError(f"OIDC discovery failed for {issuer}: jwks_uri must use https://")
+
+        self._jwks_uris[issuer] = (time.monotonic(), jwks_uri)
+        return jwks_uri
+
     def _fetch_keys(self, issuer: str) -> dict[str, RSAPublicKey]:
         # In-cluster override: when this BE is co-located with auth-service,
         # the public ingress hop is wasted (and trips self-signed-cert TLS in
         # dev). The token's `iss` claim still carries the public issuer URL —
         # token-verification contract unchanged — only the FETCH URL changes.
+        # The operator-supplied override bypasses OIDC discovery: when the
+        # operator pins the local URL they already know it; one less HTTP
+        # roundtrip and one less surface for misconfiguration.
         local_issuer = settings.auth_local_issuer_url
         local_url = settings.auth_local_jwks_url
         if local_issuer and local_url and issuer == local_issuer:
             url = local_url
             opener = _local_opener
         else:
-            url = issuer.rstrip("/") + "/.well-known/jwks.json"
+            url = self._discover_jwks_uri(issuer)
             opener = _opener
         try:
             with opener.open(url, timeout=_FETCH_TIMEOUT_SECONDS) as resp:

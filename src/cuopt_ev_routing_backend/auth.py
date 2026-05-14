@@ -96,7 +96,14 @@ bearer_scheme = HTTPBearer(auto_error=False)
 
 
 def _decode_token(token: str) -> dict:
-    """Decode an RS256 JWT against the issuer's JWKS or raise 401."""
+    """Decode an RS256 JWT against the issuer's JWKS or raise 401.
+
+    Audience verification is always on (RFC 9068 §4 SHOULD). ``audience`` is
+    sourced from ``CUOPT_AUTH_TOKEN_AUDIENCE`` — a comma-separated list of
+    allowed audiences, e.g. ``"cuopt,https://cuopt.example.com/api/"``. A
+    token's ``aud`` claim matches if it equals any element of the list (PyJWT
+    semantics). Tokens with no ``aud`` claim are rejected.
+    """
     try:
         unverified_header = jwt.get_unverified_header(token)
         unverified_payload = jwt.decode(token, options={"verify_signature": False})
@@ -116,15 +123,14 @@ def _decode_token(token: str) -> dict:
     except JwksError as exc:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, str(exc)) from exc
 
-    options = {"verify_aud": settings.auth_token_audience is not None}
     try:
         return jwt.decode(
             token,
             public_key,
             algorithms=["RS256"],
-            audience=settings.auth_token_audience,
+            audience=settings.auth_token_audience_list,
             issuer=issuer,
-            options=options,
+            options={"verify_aud": True},
         )
     except jwt.ExpiredSignatureError as exc:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Token expired") from exc
@@ -132,11 +138,40 @@ def _decode_token(token: str) -> dict:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid token") from exc
 
 
+def _extract_scopes(payload: dict) -> list[str]:
+    """Pull scopes out of a verified JWT, accepting three claim shapes.
+
+    Reads the OAuth2 ``scope`` claim (space-separated string, per RFC 6749 §3.3
+    and RFC 9068 — what auth-service and Oracle IDCS emit) first. Falls back
+    to ``scp`` (space-separated string — what Microsoft Entra emits for
+    delegated permissions) when ``scope`` is absent. Falls back to ``roles``
+    (a list, not a string — what Entra emits for application permissions)
+    when both ``scope`` and ``scp`` are absent.
+
+    Returning an empty list when no recognized claim is present is correct: it
+    forces scope-gated routes to 403 rather than silently allowing a token
+    that carries no authorization signal at all.
+    """
+    scope_claim = payload.get("scope")
+    if isinstance(scope_claim, str) and scope_claim:
+        return scope_claim.split()
+    scp_claim = payload.get("scp")
+    if isinstance(scp_claim, str) and scp_claim:
+        return scp_claim.split()
+    roles_claim = payload.get("roles")
+    if isinstance(roles_claim, list):
+        return [str(r) for r in roles_claim if r]
+    return []
+
+
 def _principal_from_payload(payload: dict) -> CurrentPrincipal:
     """Translate verified JWT claims into a ``CurrentPrincipal``.
 
     ``principal_type`` defaults to ``user`` when missing — matches the
-    auth-service's legacy behavior for tokens minted before spec 002.
+    auth-service's legacy behavior for tokens minted before spec 002. Scopes
+    are extracted via :func:`_extract_scopes` which understands the
+    auth-service / IDCS ``scope`` claim, the Entra delegated-permission
+    ``scp`` claim, and the Entra app-roles ``roles`` claim.
     """
     # Explicit ``""`` is malformed and must 401; only a missing claim
     # falls back to the legacy default of ``user``.
@@ -145,8 +180,6 @@ def _principal_from_payload(payload: dict) -> CurrentPrincipal:
         principal_type = PrincipalType(principal_type_raw)
     except ValueError as exc:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Unknown principal_type") from exc
-    scope_claim = payload.get("scope")
-    scopes = scope_claim.split() if isinstance(scope_claim, str) and scope_claim else []
     return CurrentPrincipal(
         principal_type=principal_type,
         id=str(payload["sub"]),
@@ -154,7 +187,7 @@ def _principal_from_payload(payload: dict) -> CurrentPrincipal:
         name=payload.get("name"),
         role=payload.get("role"),
         client_id=payload.get("client_id"),
-        scopes=scopes,
+        scopes=_extract_scopes(payload),
     )
 
 

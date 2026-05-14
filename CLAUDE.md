@@ -24,10 +24,19 @@ No database is used — add one only when persistence is required.
 
 All `/api/*` routes are protected by an RS256 JWT dependency
 (`cuopt_ev_routing_backend.auth.get_current_user`) that validates tokens
-issued by the shared `accelerator-pack-auth-service`. Verification is local
-— the BE fetches each trusted issuer's JWKS at
-`{issuer}/.well-known/jwks.json`, caches it for `CUOPT_AUTH_JWKS_CACHE_TTL`
-seconds, and looks the token's `kid` header up against the cache. Set
+issued by the shared `accelerator-pack-auth-service` or federated IdPs
+(Oracle IDCS, Microsoft Entra). Verification is local — for each trusted
+issuer the BE fetches the OIDC discovery doc at
+`{issuer}/.well-known/openid-configuration`, reads the `jwks_uri` field,
+fetches the JWKS at that URL, caches it for `CUOPT_AUTH_JWKS_CACHE_TTL`
+seconds, and looks the token's `kid` header up against the cache.
+Discovery-based resolution lets IDCS publish JWKS at
+`/admin/v1/SigningCert/jwk` and Entra at `/{tenant}/discovery/v2.0/keys`
+— hardcoding `/.well-known/jwks.json` only works for auth-service. Tokens
+must carry an `aud` claim matching one of the values in
+`CUOPT_AUTH_TOKEN_AUDIENCE` (RFC 9068 §4). Scope authorization reads the
+`scope` claim first (RFC 6749), falling back to `scp` (Entra delegated) or
+`roles` (Entra app-roles) for federated tokens. Set
 `CUOPT_AUTH_REQUIRE_AUTH=true` in deployed environments. The default
 (`true` in production; `false` only when `CUOPT_DEBUG=true`) returns a
 synthetic admin user without checking the token — local-dev convenience.
@@ -80,10 +89,10 @@ All prefixed with `CUOPT_`. Defaults are in `src/cuopt_ev_routing_backend/config
 | `CUOPT_LLAMASTACK_MODEL` | Default model id (FE can override per-request) |
 | `CUOPT_GOOGLE_MAPS_API_KEY` | Returned via `/api/config` to the SPA |
 | `CUOPT_OPENWEATHERMAP_API_KEY` | Real weather provider key; empty = mock mode |
-| `CUOPT_AUTH_TRUSTED_ISSUERS` | Comma-separated allowlist of trusted issuer URLs (each must be `https://`). Tokens carrying an `iss` claim outside this list are rejected before any network IO. |
-| `CUOPT_AUTH_JWKS_CACHE_TTL` | JWKS cache TTL in seconds (default `3600`). A kid-miss within the TTL triggers exactly one refresh. |
+| `CUOPT_AUTH_TRUSTED_ISSUERS` | Comma-separated allowlist of trusted issuer URLs (each must be `https://`). Tokens carrying an `iss` claim outside this list are rejected before any network IO. Each issuer's JWKS URL is resolved via its OIDC discovery doc at `{iss}/.well-known/openid-configuration` (`jwks_uri` field). |
+| `CUOPT_AUTH_JWKS_CACHE_TTL` | JWKS cache TTL in seconds (default `3600`). Applies to both the OIDC discovery doc and the JWKS itself. A kid-miss within the TTL triggers exactly one JWKS refresh (discovery stays cached). |
 | `CUOPT_AUTH_REQUIRE_AUTH` | Default `true` in production; allowed `false` only when `CUOPT_DEBUG=true` |
-| `CUOPT_AUTH_TOKEN_AUDIENCE` | Optional; if set, tokens must include matching `aud` claim |
+| `CUOPT_AUTH_TOKEN_AUDIENCE` | Comma-separated list of allowed `aud` claim values (default `cuopt`). Audience verification is always on (RFC 9068 §4). Tokens whose `aud` matches any element validate; tokens missing `aud` or matching none are rejected. Use multiple values to trust tokens from multiple IdPs (e.g. `cuopt,https://cuopt.example.com/api/`). |
 | `CUOPT_ALLOWED_ORIGINS` | Comma-separated; `*` only safe for dev |
 | `CUOPT_RATE_LIMIT` | slowapi default rate limit |
 

@@ -65,10 +65,12 @@ def make_token(
     issuer: str = TEST_ISSUER,
     kid: str = TEST_KID,
     private_pem: str = TEST_PRIVATE_PEM,
-    audience: str | None = None,
+    audience: str | list[str] | None = "cuopt",
     sub: str = "42",
     principal_type: str | None = None,
     scope: str | None = None,
+    scp: str | None = None,
+    roles: list[str] | None = None,
 ) -> str:
     """Mint an RS256 user-style token signed by the test key.
 
@@ -77,9 +79,14 @@ def make_token(
     to-user behavior remains exercised.
 
     ``scope`` (when set) is stamped as the space-joined OAuth2 ``scope``
-    claim — needed by scope-gated routes (spec 003). Omitting it preserves
-    the pre-spec-003 shape (no scope claim) so legacy-token behavior is
-    still exercised by default.
+    claim — needed by scope-gated routes (spec 003). ``scp`` mints the
+    Microsoft Entra delegated-permissions claim; ``roles`` mints the Entra
+    app-roles claim (a list, not space-separated). Tests pick whichever
+    shape they're pinning.
+
+    ``audience`` defaults to ``"cuopt"`` to match the new always-on aud
+    verification (RFC 9068). Pass ``None`` to omit the claim entirely (for
+    negative-path tests). Pass a list to stamp multiple audiences.
     """
     now = datetime.now(UTC)
     payload: dict = {
@@ -95,6 +102,10 @@ def make_token(
         payload["principal_type"] = principal_type
     if scope is not None:
         payload["scope"] = scope
+    if scp is not None:
+        payload["scp"] = scp
+    if roles is not None:
+        payload["roles"] = roles
     if audience is not None:
         payload["aud"] = audience
     return jwt.encode(payload, private_pem, algorithm="RS256", headers={"kid": kid})
@@ -108,7 +119,7 @@ def make_client_token(
     issuer: str = TEST_ISSUER,
     kid: str = TEST_KID,
     private_pem: str = TEST_PRIVATE_PEM,
-    audience: str | None = None,
+    audience: str | list[str] | None = "cuopt",
 ) -> str:
     """Mint an RS256 client-style token (OAuth2 client_credentials shape).
 
@@ -146,28 +157,45 @@ def install_jwks_stub(
     *,
     responder: Callable[[str], bytes] | None = None,
     counter: list[int] | None = None,
+    discovery_counter: list[int] | None = None,
+    issuer: str = TEST_ISSUER,
 ) -> None:
     """Stub the JWKS opener so no real network IO happens during tests.
 
     Replaces ``jwks._opener.open`` rather than ``urlopen`` because the
     production code goes through a custom hardened ``OpenerDirector``.
 
-    Pass ``document`` for the single-issuer happy path, or ``responder`` for
-    per-URL responses (e.g. multi-issuer tests). Optionally pass ``counter``
-    (a single-element list) to count fetches across the test.
+    The default responder serves an OIDC discovery doc at
+    ``{issuer}/.well-known/openid-configuration`` (pointing at
+    ``{issuer}/.well-known/jwks.json``) and a JWKS doc at that URL. Pass
+    ``responder`` to override the URL→body mapping for multi-issuer or
+    custom-path (e.g. IDCS-style) tests.
+
+    ``counter`` increments on every fetch (discovery + jwks combined);
+    ``discovery_counter`` increments only on discovery-doc fetches — useful
+    for tests that need to assert the discovery cache is hot.
     """
     from cuopt_ev_routing_backend import jwks
 
     if responder is None:
         doc = document if document is not None else jwks_document()
-        default_body = json.dumps(doc).encode()
+        jwks_body = json.dumps(doc).encode()
+        jwks_url = issuer.rstrip("/") + "/.well-known/jwks.json"
+        discovery_url = issuer.rstrip("/") + "/.well-known/openid-configuration"
+        discovery_body = json.dumps({"issuer": issuer, "jwks_uri": jwks_url}).encode()
 
-        def responder(_url: str) -> bytes:
-            return default_body
+        def responder(url: str) -> bytes:
+            if url == discovery_url:
+                return discovery_body
+            if url == jwks_url:
+                return jwks_body
+            raise AssertionError(f"unexpected fetch to {url!r}")
 
     def _fake_open(url, timeout=None):  # noqa: ARG001 — signature must match OpenerDirector.open
         if counter is not None:
             counter[0] += 1
+        if discovery_counter is not None and url.endswith("/.well-known/openid-configuration"):
+            discovery_counter[0] += 1
         return _FakeResponse(responder(url))
 
     monkeypatch.setattr(jwks._opener, "open", _fake_open)

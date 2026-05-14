@@ -40,7 +40,13 @@ class Settings(BaseSettings):
     auth_trusted_issuers: str = ""
     auth_jwks_cache_ttl: int = 3600
     auth_require_auth: bool = True
-    auth_token_audience: str | None = None
+    # RFC 9068 §4 — every access token MUST be issued for an explicit audience
+    # and every verifier MUST check it. The default ``cuopt`` matches the value
+    # the auth-service cuopt pack model stamps into its tokens; federated IdPs
+    # (Oracle IDCS, Microsoft Entra) typically mint resource-URL audiences,
+    # which can be added alongside the auth-service value as a comma-separated
+    # list. PyJWT accepts any element of the list as a valid ``aud`` match.
+    auth_token_audience: str = "cuopt"  # noqa: S105 — audience identifier, not a secret
 
     # In-cluster JWKS fetch override. When auth-service is co-located with this
     # pack BE, fetching JWKS via the public ingress means a wasted hop and
@@ -65,6 +71,17 @@ class Settings(BaseSettings):
     oracle_connection_string: str = Field("", json_schema_extra={"sensitive": True})
     oracle_user: str = ""
     oracle_password: str = Field("", json_schema_extra={"sensitive": True})  # noqa: S105
+
+    @property
+    def auth_token_audience_list(self) -> list[str]:
+        """Parse ``auth_token_audience`` (comma-separated) into a list of allowed audiences.
+
+        PyJWT's ``audience=`` parameter accepts a list; if any element matches
+        the token's ``aud`` claim, validation passes. This lets one pack BE
+        trust tokens minted with different audience values (auth-service stamps
+        ``cuopt``; an IDCS app might stamp ``https://cuopt.example.com/api/``).
+        """
+        return [aud.strip() for aud in self.auth_token_audience.split(",") if aud.strip()]
 
 
 settings = Settings()

@@ -37,40 +37,50 @@ def auth_enabled(monkeypatch):
     monkeypatch.setattr(settings, "auth_require_auth", True)
     monkeypatch.setattr(settings, "auth_trusted_issuers", TEST_ISSUER)
     monkeypatch.setattr(settings, "auth_jwks_cache_ttl", 3600)
-    monkeypatch.setattr(settings, "auth_token_audience", None)
+    monkeypatch.setattr(settings, "auth_token_audience", "cuopt")
 
 
 def test_jwks_cache_hit_within_ttl_does_not_refetch(auth_enabled, monkeypatch):
-    """Two calls within TTL → exactly one fetch (T1, happy-path half)."""
+    """Two calls within TTL → exactly one discovery + one JWKS fetch (T1)."""
     counter = [0]
     install_jwks_stub(monkeypatch, counter=counter)
     get_signing_key(TEST_ISSUER, TEST_KID)
     get_signing_key(TEST_ISSUER, TEST_KID)
-    assert counter[0] == 1
+    # 1 discovery doc + 1 JWKS fetch — second call hits both caches.
+    assert counter[0] == 2
 
 
 def test_jwks_cache_refetches_after_ttl_expiry(auth_enabled, monkeypatch):
-    """TTL=0 → every call refetches (T1, expiry half)."""
+    """TTL=0 → every call refetches discovery + JWKS (T1, expiry half)."""
     counter = [0]
     install_jwks_stub(monkeypatch, counter=counter)
     get_signing_key(TEST_ISSUER, TEST_KID)
     monkeypatch.setattr(settings, "auth_jwks_cache_ttl", 0)
     get_signing_key(TEST_ISSUER, TEST_KID)
-    assert counter[0] == 2
+    # First call: 1 discovery + 1 jwks = 2. Second call (TTL=0): 1 + 1 = 2.
+    assert counter[0] == 4
 
 
 def test_jwks_kid_miss_triggers_exactly_one_refresh(auth_enabled, monkeypatch):
-    """A request for an unknown kid forces one refresh, then raises (T2)."""
+    """A request for an unknown kid forces one JWKS refresh, then raises (T2).
+
+    Discovery doc is cached separately and is not re-fetched on kid miss —
+    the JWKS URL doesn't change between rotations.
+    """
     counter = [0]
-    install_jwks_stub(monkeypatch, counter=counter)
-    # Prime cache with kid A.
+    discovery_counter = [0]
+    install_jwks_stub(monkeypatch, counter=counter, discovery_counter=discovery_counter)
+    # Prime cache with kid A: 1 discovery + 1 jwks.
     get_signing_key(TEST_ISSUER, TEST_KID)
-    assert counter[0] == 1
-    # Request kid B → one refresh, then failure (because the stub still
+    assert counter[0] == 2
+    assert discovery_counter[0] == 1
+    # Request kid B → one JWKS refresh, then failure (because the stub still
     # only serves kid A — pins the contract: refresh-once-then-fail).
     with pytest.raises(JwksError, match="not in JWKS"):
         get_signing_key(TEST_ISSUER, "kid-never-issued")
-    assert counter[0] == 2
+    # Discovery doc not refetched — 1 more jwks fetch only.
+    assert counter[0] == 3
+    assert discovery_counter[0] == 1
 
 
 def test_jwks_multi_issuer_routes_per_url(monkeypatch):
@@ -83,7 +93,7 @@ def test_jwks_multi_issuer_routes_per_url(monkeypatch):
     monkeypatch.setattr(settings, "auth_require_auth", True)
     monkeypatch.setattr(settings, "auth_trusted_issuers", f"{issuer_a},{issuer_b}")
     monkeypatch.setattr(settings, "auth_jwks_cache_ttl", 3600)
-    monkeypatch.setattr(settings, "auth_token_audience", None)
+    monkeypatch.setattr(settings, "auth_token_audience", "cuopt")
 
     # Different keypair per issuer so we know routing actually picks correctly.
     private_a, private_a_pem, _ = _generate_keypair()
@@ -101,9 +111,15 @@ def test_jwks_multi_issuer_routes_per_url(monkeypatch):
         "alg": "RS256",
         "use": "sig",
     }
+    jwks_a_url = issuer_a.rstrip("/") + "/.well-known/jwks.json"
+    jwks_b_url = issuer_b.rstrip("/") + "/.well-known/jwks.json"
+    discovery_a_url = issuer_a.rstrip("/") + "/.well-known/openid-configuration"
+    discovery_b_url = issuer_b.rstrip("/") + "/.well-known/openid-configuration"
     bodies = {
-        issuer_a.rstrip("/") + "/.well-known/jwks.json": json.dumps({"keys": [jwk_a]}).encode(),
-        issuer_b.rstrip("/") + "/.well-known/jwks.json": json.dumps({"keys": [jwk_b]}).encode(),
+        jwks_a_url: json.dumps({"keys": [jwk_a]}).encode(),
+        jwks_b_url: json.dumps({"keys": [jwk_b]}).encode(),
+        discovery_a_url: json.dumps({"issuer": issuer_a, "jwks_uri": jwks_a_url}).encode(),
+        discovery_b_url: json.dumps({"issuer": issuer_b, "jwks_uri": jwks_b_url}).encode(),
     }
 
     def _responder(url: str) -> bytes:
@@ -143,14 +159,19 @@ def test_non_https_issuer_rejected(monkeypatch):
 
 
 def test_tls_verification_failure_raises_jwks_error(auth_enabled, monkeypatch):
-    """An ssl.SSLError on the JWKS fetch surfaces as JwksError, not a 500."""
+    """An ssl.SSLError on the JWKS fetch surfaces as JwksError, not a 500.
+
+    The error happens on the OIDC discovery step (which fetches before JWKS) —
+    the production code wraps either step's TLS failure in JwksError, so we
+    pin the more descriptive ``OIDC discovery failed ... TLS error`` message.
+    """
 
     def _fake_open(_url, timeout=None):  # noqa: ARG001
         raise ssl.SSLError("certificate verify failed: self signed certificate")
 
     monkeypatch.setattr(jwks._opener, "open", _fake_open)
     jwks.reset_cache()
-    with pytest.raises(JwksError, match="TLS verification failed"):
+    with pytest.raises(JwksError, match="TLS"):
         get_signing_key(TEST_ISSUER, TEST_KID)
 
 
@@ -166,7 +187,11 @@ def test_malformed_jwk_entry_is_dropped_not_propagated(auth_enabled, monkeypatch
 
 
 def test_redirect_is_refused(auth_enabled, monkeypatch):
-    """30x responses from the JWKS endpoint must not be followed silently."""
+    """30x responses from the JWKS endpoint must not be followed silently.
+
+    Discovery happens first, so the redirect error surfaces from the discovery
+    step. Same defensive contract — neither step follows redirects.
+    """
     from urllib.error import URLError
 
     def _fake_open(_url, timeout=None):  # noqa: ARG001
@@ -175,7 +200,7 @@ def test_redirect_is_refused(auth_enabled, monkeypatch):
 
     monkeypatch.setattr(jwks._opener, "open", _fake_open)
     jwks.reset_cache()
-    with pytest.raises(JwksError, match="failed to fetch JWKS"):
+    with pytest.raises(JwksError, match="OIDC discovery failed"):
         get_signing_key(TEST_ISSUER, TEST_KID)
 
 
@@ -201,7 +226,7 @@ def test_local_jwks_url_override_used_when_issuer_matches(monkeypatch):
     monkeypatch.setattr(settings, "auth_require_auth", True)
     monkeypatch.setattr(settings, "auth_trusted_issuers", public_issuer)
     monkeypatch.setattr(settings, "auth_jwks_cache_ttl", 3600)
-    monkeypatch.setattr(settings, "auth_token_audience", None)
+    monkeypatch.setattr(settings, "auth_token_audience", "cuopt")
     monkeypatch.setattr(settings, "auth_local_issuer_url", public_issuer)
     monkeypatch.setattr(settings, "auth_local_jwks_url", local_url)
 
@@ -226,23 +251,31 @@ def test_local_jwks_url_override_used_when_issuer_matches(monkeypatch):
 
 def test_local_jwks_url_ignored_for_other_issuers(monkeypatch):
     """For trusted issuers that don't match the local-override issuer,
-    the standard {iss}/.well-known/jwks.json URL is used."""
+    OIDC discovery resolves the JWKS URL and both fetches go through the
+    public opener (not the local-override one)."""
     local_issuer = "https://public.example.com/auth"
     other_issuer = "https://other.example.com/auth"
+    other_jwks_url = other_issuer + "/.well-known/jwks.json"
+    other_discovery_url = other_issuer + "/.well-known/openid-configuration"
     local_url = "http://auth-service:8080/auth/.well-known/jwks.json"
     monkeypatch.setattr(settings, "auth_require_auth", True)
     monkeypatch.setattr(settings, "auth_trusted_issuers", f"{local_issuer},{other_issuer}")
     monkeypatch.setattr(settings, "auth_jwks_cache_ttl", 3600)
-    monkeypatch.setattr(settings, "auth_token_audience", None)
+    monkeypatch.setattr(settings, "auth_token_audience", "cuopt")
     monkeypatch.setattr(settings, "auth_local_issuer_url", local_issuer)
     monkeypatch.setattr(settings, "auth_local_jwks_url", local_url)
 
-    body = json.dumps(jwks_document()).encode()
+    jwks_body = json.dumps(jwks_document()).encode()
+    discovery_body = json.dumps({"issuer": other_issuer, "jwks_uri": other_jwks_url}).encode()
     fetched_public: list[str] = []
 
     def _public_open(url, timeout=None):  # noqa: ARG001
         fetched_public.append(url)
-        return _FakeResponse(body)
+        if url == other_discovery_url:
+            return _FakeResponse(discovery_body)
+        if url == other_jwks_url:
+            return _FakeResponse(jwks_body)
+        raise AssertionError(f"unexpected fetch to {url!r}")
 
     monkeypatch.setattr(jwks._opener, "open", _public_open)
 
@@ -253,7 +286,7 @@ def test_local_jwks_url_ignored_for_other_issuers(monkeypatch):
     jwks.reset_cache()
 
     get_signing_key(other_issuer, TEST_KID)
-    assert fetched_public == [other_issuer + "/.well-known/jwks.json"]
+    assert fetched_public == [other_discovery_url, other_jwks_url]
 
 
 def test_local_opener_rejects_file_scheme():
