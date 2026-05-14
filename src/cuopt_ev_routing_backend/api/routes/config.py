@@ -7,12 +7,21 @@ from typing import Annotated
 from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from cuopt_ev_routing_backend.auth import get_current_user
+from cuopt_ev_routing_backend.auth import CuoptScope, get_current_user, require_scope
 from cuopt_ev_routing_backend.config import settings
 from cuopt_ev_routing_backend.database import get_db
 from cuopt_ev_routing_backend.services import instance_settings as instance_settings_service
 
-router = APIRouter(prefix="/api", tags=["Configuration"], dependencies=[Depends(get_current_user)])
+# Router-level scope gate: cuopt pack model grants ``config.read`` to user
+# and reader roles. Admin bypasses via wildcard.
+router = APIRouter(
+    prefix="/api",
+    tags=["Configuration"],
+    dependencies=[
+        Depends(get_current_user),
+        Depends(require_scope(CuoptScope.config_read.value)),
+    ],
+)
 
 
 @router.get(

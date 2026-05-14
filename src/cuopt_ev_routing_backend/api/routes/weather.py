@@ -7,13 +7,20 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from cuopt_ev_routing_backend.auth import get_current_user
+from cuopt_ev_routing_backend.auth import CuoptScope, get_current_user, require_scope
 from cuopt_ev_routing_backend.database import get_db
 from cuopt_ev_routing_backend.services import instance_settings as instance_settings_service
 from cuopt_ev_routing_backend.services import weather as weather_service
 
+# Router-level scope gate: cuopt pack model grants ``weather.view`` to user
+# and reader roles. Admin bypasses via wildcard.
 router = APIRouter(
-    prefix="/api/weather", tags=["Weather"], dependencies=[Depends(get_current_user)]
+    prefix="/api/weather",
+    tags=["Weather"],
+    dependencies=[
+        Depends(get_current_user),
+        Depends(require_scope(CuoptScope.weather_view.value)),
+    ],
 )
 
 

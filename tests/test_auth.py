@@ -87,10 +87,23 @@ def test_protected_route_no_bearer_returns_401(client, auth_enabled):
 
 
 def test_protected_route_valid_bearer_returns_200(client, auth_enabled):
-    token = make_token()
+    # /api/config gates on the cuopt pack model's ``config.read`` scope —
+    # mint a token that carries it.
+    token = make_token(scope="config.read")
     resp = client.get("/api/config", headers={"Authorization": f"Bearer {token}"})
     assert resp.status_code == 200
     assert "googleMapsApiKey" in resp.json()
+
+
+def test_protected_route_valid_bearer_without_scope_returns_403(client, auth_enabled):
+    """Regression: cuopt pack model declares ``config.read`` for /api/config;
+    a user token that lacks that scope must 403 rather than serve the
+    config payload. Pre-scope-gate behavior was 200 for any signed-in
+    caller — the QA review flagged that as contract drift."""
+    token = make_token()  # no scope claim
+    resp = client.get("/api/config", headers={"Authorization": f"Bearer {token}"})
+    assert resp.status_code == 403
+    assert "config.read" in resp.json()["detail"]
 
 
 def test_protected_route_expired_bearer_returns_401(client, auth_enabled):

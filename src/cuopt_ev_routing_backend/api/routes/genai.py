@@ -9,13 +9,26 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from cuopt_ev_routing_backend.auth import get_current_user
+from cuopt_ev_routing_backend.auth import CuoptScope, get_current_user, require_scope
 from cuopt_ev_routing_backend.database import get_db
 from cuopt_ev_routing_backend.schemas.genai import ChatRequestEnvelope
 from cuopt_ev_routing_backend.services import genai as genai_service
 from cuopt_ev_routing_backend.services import instance_settings as instance_settings_service
 
-router = APIRouter(prefix="/api", tags=["GenAI"], dependencies=[Depends(get_current_user)])
+# Router-level scope gate: the cuopt pack model grants ``chat.use`` to the
+# ``user`` role and (by wildcard) to ``admin``. Without this gate, the routes
+# were authenticated but not authorized — any signed-in caller could exercise
+# the LLM proxy regardless of their pack-model permissions. Admin tokens
+# bypass scope checks; ``reader``-role tokens (which don't carry chat.use)
+# now correctly 403.
+router = APIRouter(
+    prefix="/api",
+    tags=["GenAI"],
+    dependencies=[
+        Depends(get_current_user),
+        Depends(require_scope(CuoptScope.chat_use.value)),
+    ],
+)
 
 
 async def _genai_enabled_or_404(db: AsyncSession) -> None:
