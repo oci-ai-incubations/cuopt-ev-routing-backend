@@ -67,14 +67,54 @@ def make_token(
     private_pem: str = TEST_PRIVATE_PEM,
     audience: str | None = None,
     sub: str = "42",
+    principal_type: str | None = None,
 ) -> str:
-    """Mint an RS256 token signed by the test key (or a caller-supplied one)."""
+    """Mint an RS256 user-style token signed by the test key.
+
+    ``principal_type`` lets callers stamp the spec-002 claim explicitly;
+    omitting it preserves the legacy pre-spec-002 shape so the BE's default-
+    to-user behavior remains exercised.
+    """
     now = datetime.now(UTC)
     payload: dict = {
         "sub": sub,
         "email": "u@example.com",
         "name": "Test User",
         "role": role,
+        "iat": int(now.timestamp()),
+        "exp": int((now + timedelta(seconds=exp_offset)).timestamp()),
+        "iss": issuer,
+    }
+    if principal_type is not None:
+        payload["principal_type"] = principal_type
+    if audience is not None:
+        payload["aud"] = audience
+    return jwt.encode(payload, private_pem, algorithm="RS256", headers={"kid": kid})
+
+
+def make_client_token(
+    *,
+    client_id: str = "cli_test",
+    scope: str = "",
+    exp_offset: int = 600,
+    issuer: str = TEST_ISSUER,
+    kid: str = TEST_KID,
+    private_pem: str = TEST_PRIVATE_PEM,
+    audience: str | None = None,
+) -> str:
+    """Mint an RS256 client-style token (OAuth2 client_credentials shape).
+
+    Mirrors the claim layout of ``auth-service.create_client_access_token``:
+    ``sub=client:<id>``, ``principal_type=client``, ``client_id`` populated,
+    ``scope`` space-joined. No ``email`` / ``name`` / ``role`` — those are
+    user-only.
+    """
+    now = datetime.now(UTC)
+    payload: dict = {
+        "sub": f"client:{client_id}",
+        "client_id": client_id,
+        "scope": scope,
+        "principal_type": "client",
         "iat": int(now.timestamp()),
         "exp": int((now + timedelta(seconds=exp_offset)).timestamp()),
         "iss": issuer,

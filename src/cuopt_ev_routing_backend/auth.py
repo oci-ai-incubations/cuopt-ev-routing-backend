@@ -7,10 +7,16 @@ locally against the issuer's published JWKS. ``CUOPT_AUTH_TRUSTED_ISSUERS``
 holds a comma-separated allowlist of issuer URLs; the corresponding JWKS is
 fetched from ``{issuer}/.well-known/jwks.json`` and cached for
 ``CUOPT_AUTH_JWKS_CACHE_TTL`` seconds. When ``CUOPT_AUTH_REQUIRE_AUTH`` is
-false (default), routes that depend on :func:`get_current_user` get a
+false (default), routes that depend on :func:`get_current_principal` get a
 synthetic admin user instead — useful for local development.
+
+The principal model carries both user-typed and client-typed callers (OAuth2
+client_credentials). Routes that need to differentiate use
+``require_principal_type``; the legacy ``require_role`` helper still works
+and naturally rejects clients (which have no role).
 """
 
+from enum import StrEnum
 from typing import Annotated
 
 import jwt
@@ -22,19 +28,47 @@ from cuopt_ev_routing_backend.config import settings
 from cuopt_ev_routing_backend.jwks import JwksError, get_signing_key, trusted_issuers
 
 
-class CurrentUser(BaseModel):
-    """User identity attached to an authenticated request.
+class PrincipalType(StrEnum):
+    """Kind of caller carried in a JWT.
 
-    ``id`` is the JWT ``sub`` claim. It is intentionally typed ``str`` because
-    federated IdPs (Oracle IDCS, Microsoft Entra) mint tokens with UUID ``sub``
-    values that don't fit ``int``. The cuopt BE doesn't use ``id`` as a DB key
-    (this service has no user table), so opaque-string identity is sufficient.
+    Mirrors ``PrincipalType`` in accelerator-pack-auth-service so the
+    cross-service claim shape has one canonical name on both sides.
     """
 
+    user = "user"
+    client = "client"
+
+
+class CurrentPrincipal(BaseModel):
+    """Authenticated principal — either a human user or a service account.
+
+    ``id`` is the raw JWT ``sub`` claim. For users it's the auth-service user
+    id; for clients it's the ``client:<client_id>`` form (the auth-service
+    prefixes ``client:`` so the namespace can't collide with user IDs). The
+    cuopt BE doesn't use ``id`` as a DB key, so opaque-string identity is
+    fine.
+
+    Tokens that predate the principal_type claim default to ``user`` —
+    matches the auth-service's legacy behavior.
+    """
+
+    # Defaults to PrincipalType.user so legacy code that constructed
+    # ``CurrentUser(id=...)`` without the new claim keeps compiling — the
+    # spec defines unspecified principal_type as user.
+    principal_type: PrincipalType = PrincipalType.user
     id: str
-    email: str
-    name: str
-    role: str  # admin | user | reader | pending
+    email: str | None = None
+    name: str | None = None
+    role: str | None = None  # admin | user | reader | pending; None for clients
+    client_id: str | None = None  # populated only for client tokens
+    scopes: list[str] = []  # OAuth2 scope claim, space-split
+
+
+# Alias kept so existing route signatures and imports continue to compile.
+# ``get_current_user`` and ``CurrentUser`` are now thin aliases over the
+# principal-typed equivalents — the cuopt routes don't branch on user vs
+# client today, and ``role`` / ``email`` / ``name`` still resolve when set.
+CurrentUser = CurrentPrincipal
 
 
 bearer_scheme = HTTPBearer(auto_error=False)
@@ -77,16 +111,50 @@ def _decode_token(token: str) -> dict:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid token") from exc
 
 
-def get_current_user(
+def _principal_from_payload(payload: dict) -> CurrentPrincipal:
+    """Translate verified JWT claims into a ``CurrentPrincipal``.
+
+    ``principal_type`` defaults to ``user`` when missing — matches the
+    auth-service's legacy behavior for tokens minted before spec 002.
+    """
+    # Explicit ``""`` is malformed and must 401; only a missing claim
+    # falls back to the legacy default of ``user``.
+    principal_type_raw = payload.get("principal_type", PrincipalType.user.value)
+    try:
+        principal_type = PrincipalType(principal_type_raw)
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Unknown principal_type") from exc
+    scope_claim = payload.get("scope")
+    scopes = scope_claim.split() if isinstance(scope_claim, str) and scope_claim else []
+    return CurrentPrincipal(
+        principal_type=principal_type,
+        id=str(payload["sub"]),
+        email=payload.get("email"),
+        name=payload.get("name"),
+        role=payload.get("role"),
+        client_id=payload.get("client_id"),
+        scopes=scopes,
+    )
+
+
+def get_current_principal(
     creds: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
-) -> CurrentUser:
-    """Validate the request's Bearer token and return the user.
+) -> CurrentPrincipal:
+    """Validate the Bearer token and return the authenticated principal.
 
     When ``CUOPT_AUTH_REQUIRE_AUTH=false`` the dependency emits a synthetic
     admin user without checking the token at all — local-dev convenience.
     """
     if not settings.auth_require_auth:
-        return CurrentUser(id="0", email="dev@local", name="local-dev", role="admin")
+        return CurrentPrincipal(
+            principal_type=PrincipalType.user,
+            id="0",
+            email="dev@local",
+            name="local-dev",
+            role="admin",
+            client_id=None,
+            scopes=[],
+        )
 
     if creds is None or creds.scheme.lower() != "bearer":
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Missing Bearer token")
@@ -96,20 +164,49 @@ def get_current_user(
         raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, "Auth not configured")
 
     payload = _decode_token(creds.credentials)
-    return CurrentUser(
-        id=str(payload["sub"]),
-        email=payload.get("email", ""),
-        name=payload.get("name", ""),
-        role=payload.get("role", "user"),
-    )
+    return _principal_from_payload(payload)
+
+
+# Aliased so existing routes that imported ``get_current_user`` keep working.
+get_current_user = get_current_principal
 
 
 def require_role(*allowed: str):
-    """Return a dependency that enforces the user has one of ``allowed`` roles."""
+    """Return a dependency that enforces the principal has one of ``allowed`` roles.
 
-    def _check(user: Annotated[CurrentUser, Depends(get_current_user)]) -> CurrentUser:
+    Client principals have no role and are 403'd. Roles are a user concept;
+    machine callers should use scope-gated routes (spec 003) or
+    ``require_principal_type("client")``.
+
+    The parameter is named ``user`` (not ``principal``) for backward compat:
+    callers that built dependencies on top of this name still resolve.
+    """
+
+    def _check(
+        user: Annotated[CurrentPrincipal, Depends(get_current_principal)],
+    ) -> CurrentPrincipal:
         if user.role not in allowed:
             raise HTTPException(status.HTTP_403_FORBIDDEN, "Insufficient role")
         return user
+
+    return _check
+
+
+def require_principal_type(expected: PrincipalType):
+    """Return a dependency that enforces a specific principal type.
+
+    Use for routes that must be reached only by humans (admin panel UI calls)
+    or only by machines (webhook receivers). Mismatched principals return 403.
+    """
+
+    def _check(
+        principal: Annotated[CurrentPrincipal, Depends(get_current_principal)],
+    ) -> CurrentPrincipal:
+        if principal.principal_type != expected:
+            raise HTTPException(
+                status.HTTP_403_FORBIDDEN,
+                f"This route requires a {expected.value} principal",
+            )
+        return principal
 
     return _check
