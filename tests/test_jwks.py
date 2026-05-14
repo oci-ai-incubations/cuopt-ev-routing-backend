@@ -23,9 +23,11 @@ from ._auth_helpers import (
     TEST_ISSUER,
     TEST_KID,
     TEST_PRIVATE_PEM,
+    _FakeResponse,
     _generate_keypair,
     install_jwks_stub,
     jwk_for_test_key,
+    jwks_document,
     make_token,
 )
 
@@ -190,3 +192,79 @@ def test_opener_has_https_handler():
     """Sanity: the opener must still speak https."""
     handlers = [type(h).__name__ for h in jwks._opener.handlers]
     assert "HTTPSHandler" in handlers
+
+
+def test_local_jwks_url_override_used_when_issuer_matches(monkeypatch):
+    """When iss matches auth_local_issuer_url, fetch via auth_local_jwks_url."""
+    public_issuer = "https://public.example.com/auth"
+    local_url = "http://auth-service:8080/auth/.well-known/jwks.json"
+    monkeypatch.setattr(settings, "auth_require_auth", True)
+    monkeypatch.setattr(settings, "auth_trusted_issuers", public_issuer)
+    monkeypatch.setattr(settings, "auth_jwks_cache_ttl", 3600)
+    monkeypatch.setattr(settings, "auth_token_audience", None)
+    monkeypatch.setattr(settings, "auth_local_issuer_url", public_issuer)
+    monkeypatch.setattr(settings, "auth_local_jwks_url", local_url)
+
+    body = json.dumps(jwks_document()).encode()
+    fetched: list[str] = []
+
+    def _fake_open(url, timeout=None):  # noqa: ARG001
+        fetched.append(url)
+        return _FakeResponse(body)
+
+    monkeypatch.setattr(jwks._local_opener, "open", _fake_open)
+
+    def _public_open(url, timeout=None):  # noqa: ARG001
+        raise AssertionError(f"public opener must not be hit for local issuer; got {url!r}")
+
+    monkeypatch.setattr(jwks._opener, "open", _public_open)
+    jwks.reset_cache()
+
+    get_signing_key(public_issuer, TEST_KID)
+    assert fetched == [local_url]
+
+
+def test_local_jwks_url_ignored_for_other_issuers(monkeypatch):
+    """For trusted issuers that don't match the local-override issuer,
+    the standard {iss}/.well-known/jwks.json URL is used."""
+    local_issuer = "https://public.example.com/auth"
+    other_issuer = "https://other.example.com/auth"
+    local_url = "http://auth-service:8080/auth/.well-known/jwks.json"
+    monkeypatch.setattr(settings, "auth_require_auth", True)
+    monkeypatch.setattr(settings, "auth_trusted_issuers", f"{local_issuer},{other_issuer}")
+    monkeypatch.setattr(settings, "auth_jwks_cache_ttl", 3600)
+    monkeypatch.setattr(settings, "auth_token_audience", None)
+    monkeypatch.setattr(settings, "auth_local_issuer_url", local_issuer)
+    monkeypatch.setattr(settings, "auth_local_jwks_url", local_url)
+
+    body = json.dumps(jwks_document()).encode()
+    fetched_public: list[str] = []
+
+    def _public_open(url, timeout=None):  # noqa: ARG001
+        fetched_public.append(url)
+        return _FakeResponse(body)
+
+    monkeypatch.setattr(jwks._opener, "open", _public_open)
+
+    def _local_open(url, timeout=None):  # noqa: ARG001
+        raise AssertionError(f"local opener must not be hit for non-matching issuer; got {url!r}")
+
+    monkeypatch.setattr(jwks._local_opener, "open", _local_open)
+    jwks.reset_cache()
+
+    get_signing_key(other_issuer, TEST_KID)
+    assert fetched_public == [other_issuer + "/.well-known/jwks.json"]
+
+
+def test_local_opener_rejects_file_scheme():
+    """Even with http allowed, the local opener must not register a FileHandler."""
+    handlers = [type(h).__name__ for h in jwks._local_opener.handlers]
+    assert "FileHandler" not in handlers
+    assert "FTPHandler" not in handlers
+    assert "DataHandler" not in handlers
+
+
+def test_local_opener_refuses_redirects():
+    """The local opener must refuse 30x just like the public one."""
+    handlers = [type(h).__name__ for h in jwks._local_opener.handlers]
+    assert "_NoRedirectHandler" in handlers

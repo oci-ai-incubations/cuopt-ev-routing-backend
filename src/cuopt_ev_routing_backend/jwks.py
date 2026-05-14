@@ -23,6 +23,15 @@ Network IO uses a hardened ``urllib.request`` opener (see ``_build_opener``):
 * Redirects are disabled. A 30x from an issuer's JWKS endpoint is treated as
   an error rather than silently followed to an unvalidated target.
 
+A second, http-and-https opener (``_local_opener``, built by
+``_build_local_opener``) is used ONLY for the operator-supplied in-cluster
+override URL ``settings.auth_local_jwks_url``. http is allowed here BECAUSE
+the URL is operator-supplied via Terraform (it's the cluster-internal
+``http://auth-service:8080/...`` Service URL pinned in ``auth-locals.tf``),
+not derived from a token claim — there is no attacker-influenced input. All
+other SSRF protections (no file/ftp/data handlers, no redirects, same TLS
+context for the https case) are preserved.
+
 stdlib ``urllib.request`` is used deliberately: this is the only outbound HTTP
 this module makes, so pulling in httpx for it isn't worth the dep.
 """
@@ -99,7 +108,28 @@ def _build_opener() -> urllib.request.OpenerDirector:
     return opener
 
 
+def _build_local_opener() -> urllib.request.OpenerDirector:
+    """Build the opener used for the operator-supplied in-cluster override URL.
+
+    Differs from ``_build_opener`` only by also registering ``HTTPHandler`` —
+    the cluster-internal Service URL (``http://auth-service:8080/...``) is
+    plain http inside the pod network. Allowing http is safe BECAUSE this
+    opener is reached only when the fetch URL equals
+    ``settings.auth_local_jwks_url`` — an operator-supplied Terraform value,
+    not a token-derived one. file/ftp/data handlers remain unregistered and
+    redirects remain refused.
+    """
+    opener = urllib.request.OpenerDirector()
+    opener.add_handler(urllib.request.HTTPHandler())
+    opener.add_handler(urllib.request.HTTPSHandler(context=_ssl_context()))
+    opener.add_handler(urllib.request.HTTPDefaultErrorHandler())
+    opener.add_handler(urllib.request.HTTPErrorProcessor())
+    opener.add_handler(_NoRedirectHandler())
+    return opener
+
+
 _opener = _build_opener()
+_local_opener = _build_local_opener()
 
 
 class _IssuerCache:
@@ -141,9 +171,20 @@ class _IssuerCache:
             raise JwksError(f"kid {kid!r} not in JWKS for issuer {issuer!r}")
 
     def _fetch_keys(self, issuer: str) -> dict[str, RSAPublicKey]:
-        url = issuer.rstrip("/") + "/.well-known/jwks.json"
+        # In-cluster override: when this BE is co-located with auth-service,
+        # the public ingress hop is wasted (and trips self-signed-cert TLS in
+        # dev). The token's `iss` claim still carries the public issuer URL —
+        # token-verification contract unchanged — only the FETCH URL changes.
+        local_issuer = settings.auth_local_issuer_url
+        local_url = settings.auth_local_jwks_url
+        if local_issuer and local_url and issuer == local_issuer:
+            url = local_url
+            opener = _local_opener
+        else:
+            url = issuer.rstrip("/") + "/.well-known/jwks.json"
+            opener = _opener
         try:
-            with _opener.open(url, timeout=_FETCH_TIMEOUT_SECONDS) as resp:
+            with opener.open(url, timeout=_FETCH_TIMEOUT_SECONDS) as resp:
                 body = resp.read()
         except ssl.SSLError as exc:
             raise JwksError(f"TLS verification failed for JWKS at {url}: {exc}") from exc

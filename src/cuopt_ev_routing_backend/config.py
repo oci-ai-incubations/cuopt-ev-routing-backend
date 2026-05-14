@@ -42,6 +42,15 @@ class Settings(BaseSettings):
     auth_require_auth: bool = True
     auth_token_audience: str | None = None
 
+    # In-cluster JWKS fetch override. When auth-service is co-located with this
+    # pack BE, fetching JWKS via the public ingress means a wasted hop and
+    # (in dev) a self-signed-cert TLS error. When set, JWKS for tokens whose
+    # `iss` claim matches auth_local_issuer_url is fetched from
+    # auth_local_jwks_url instead. The token still advertises the public iss;
+    # only the fetch URL changes. Empty in standalone-no-cluster setups.
+    auth_local_issuer_url: str = ""
+    auth_local_jwks_url: str = ""
+
     # CORS. Empty default forces operators to set CUOPT_ALLOWED_ORIGINS explicitly.
     # main.py disables allow_credentials when any wildcard ("*") is in the list —
     # the combination is rejected by the CORS spec and silently broken in browsers.
