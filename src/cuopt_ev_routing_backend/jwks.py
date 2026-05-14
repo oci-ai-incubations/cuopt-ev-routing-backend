@@ -64,6 +64,23 @@ class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
         raise URLError(f"redirect to {newurl!r} refused: JWKS endpoints must not redirect")
 
 
+def _ssl_context() -> ssl.SSLContext:
+    """Construct the TLS context the JWKS opener uses.
+
+    Honors ``CUOPT_TLS_VERIFY=false`` to support dev clusters with self-signed
+    certs (the same knob the upstream-service httpx clients use). Disabling
+    verification is also gated upstream by ``main._validate_safety()`` which
+    refuses to start with ``auth_require_auth=true`` outside debug mode, so
+    this code path is only reachable in dev/debug deploys.
+    """
+    ctx = ssl.create_default_context()
+    if not settings.tls_verify:
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        logger.warning("CUOPT_TLS_VERIFY=false; JWKS fetches skip TLS verification (dev only)")
+    return ctx
+
+
 def _build_opener() -> urllib.request.OpenerDirector:
     """Build an ``OpenerDirector`` that only speaks https with explicit TLS.
 
@@ -75,7 +92,7 @@ def _build_opener() -> urllib.request.OpenerDirector:
     register only the handlers we want.
     """
     opener = urllib.request.OpenerDirector()
-    opener.add_handler(urllib.request.HTTPSHandler(context=ssl.create_default_context()))
+    opener.add_handler(urllib.request.HTTPSHandler(context=_ssl_context()))
     opener.add_handler(urllib.request.HTTPDefaultErrorHandler())
     opener.add_handler(urllib.request.HTTPErrorProcessor())
     opener.add_handler(_NoRedirectHandler())
