@@ -39,6 +39,27 @@ class PrincipalType(StrEnum):
     client = "client"
 
 
+class CuoptScope(StrEnum):
+    """Canonical cuopt scope codenames — single source of truth on the BE side.
+
+    Mirrors the scope codenames declared by the auth-service's cuopt pack
+    model (``accelerator-pack-auth-service/src/.../pack_models/cuopt.py``).
+    There is no programmatic cross-service check today: drift between this
+    enum and the auth-service pack model is caught only by integration tests
+    and code review. Keep the two in lockstep when adding or renaming scopes.
+    """
+
+    cuopt_solve = "cuopt.solve"
+    cuopt_view = "cuopt.view"
+    chat_use = "chat.use"
+    weather_view = "weather.view"
+    config_read = "config.read"
+    admin_users_manage = "admin.users.manage"
+    admin_config_write = "admin.config.write"
+    admin_features_toggle = "admin.features.toggle"
+    admin_audit_view = "admin.audit.view"
+
+
 class CurrentPrincipal(BaseModel):
     """Authenticated principal — either a human user or a service account.
 
@@ -146,6 +167,11 @@ def get_current_principal(
     admin user without checking the token at all — local-dev convenience.
     """
     if not settings.auth_require_auth:
+        # Synthetic admin gets the full cuopt scope set so scope-gated routes
+        # (spec 003) keep working under dev mode. The CuoptScope enum is the
+        # single source of truth on the BE side; the auth-service pack model
+        # is the source on the auth-service side. No programmatic cross-
+        # service check — drift is caught by integration tests + review.
         return CurrentPrincipal(
             principal_type=PrincipalType.user,
             id="0",
@@ -153,7 +179,7 @@ def get_current_principal(
             name="local-dev",
             role="admin",
             client_id=None,
-            scopes=[],
+            scopes=[s.value for s in CuoptScope],
         )
 
     if creds is None or creds.scheme.lower() != "bearer":
@@ -206,6 +232,38 @@ def require_principal_type(expected: PrincipalType):
             raise HTTPException(
                 status.HTTP_403_FORBIDDEN,
                 f"This route requires a {expected.value} principal",
+            )
+        return principal
+
+    return _check
+
+
+def require_scope(*required: str):
+    """Return a dependency that enforces ALL listed scopes on the bearer token.
+
+    Reads ``principal.scopes`` — already populated from the JWT ``scope``
+    claim by ``_principal_from_payload``. Missing scopes are reported in the
+    403 detail so the integrator sees exactly which scopes are absent.
+
+    Unlike :func:`require_role`, this dependency works for both user and
+    client principals — scope is the per-token authorization signal, role is
+    the per-human identity signal. Spec 003.
+
+    Returns the principal so the dep can also be used in a function
+    signature when the route needs the caller (e.g.
+    ``user: CurrentPrincipal = Depends(require_scope("cuopt.solve"))``).
+    Routes that only need the gate use ``dependencies=[...]`` and the return
+    value is discarded — mirrors the pattern in :func:`require_role`.
+    """
+
+    def _check(
+        principal: Annotated[CurrentPrincipal, Depends(get_current_principal)],
+    ) -> CurrentPrincipal:
+        missing = set(required) - set(principal.scopes)
+        if missing:
+            raise HTTPException(
+                status.HTTP_403_FORBIDDEN,
+                f"Missing required scopes: {' '.join(sorted(missing))}",
             )
         return principal
 

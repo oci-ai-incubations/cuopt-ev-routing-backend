@@ -68,12 +68,18 @@ def make_token(
     audience: str | None = None,
     sub: str = "42",
     principal_type: str | None = None,
+    scope: str | None = None,
 ) -> str:
     """Mint an RS256 user-style token signed by the test key.
 
     ``principal_type`` lets callers stamp the spec-002 claim explicitly;
     omitting it preserves the legacy pre-spec-002 shape so the BE's default-
     to-user behavior remains exercised.
+
+    ``scope`` (when set) is stamped as the space-joined OAuth2 ``scope``
+    claim — needed by scope-gated routes (spec 003). Omitting it preserves
+    the pre-spec-003 shape (no scope claim) so legacy-token behavior is
+    still exercised by default.
     """
     now = datetime.now(UTC)
     payload: dict = {
@@ -87,6 +93,8 @@ def make_token(
     }
     if principal_type is not None:
         payload["principal_type"] = principal_type
+    if scope is not None:
+        payload["scope"] = scope
     if audience is not None:
         payload["aud"] = audience
     return jwt.encode(payload, private_pem, algorithm="RS256", headers={"kid": kid})

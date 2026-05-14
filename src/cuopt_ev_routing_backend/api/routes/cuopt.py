@@ -8,7 +8,7 @@ import httpx
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse, Response
 
-from cuopt_ev_routing_backend.auth import get_current_user
+from cuopt_ev_routing_backend.auth import CuoptScope, get_current_user, require_scope
 from cuopt_ev_routing_backend.services import cuopt as cuopt_service
 
 router = APIRouter(prefix="/api", tags=["cuOpt"], dependencies=[Depends(get_current_user)])
@@ -50,9 +50,11 @@ async def cuopt_health() -> Response:
         "returns a request id which can be polled via `GET /cuopt/solution/{req_id}`."
     ),
     tags=["cuOpt"],
+    dependencies=[Depends(require_scope(CuoptScope.cuopt_solve.value))],
     responses={
         200: {"description": "Upstream cuOpt response"},
         401: {"description": "Token missing, invalid, or expired"},
+        403: {"description": "Token lacks the `cuopt.solve` scope"},
         500: {"description": "Upstream cuOpt request failed"},
     },
 )
@@ -78,9 +80,11 @@ async def cuopt_request(request: Request) -> JSONResponse:
         "completion of an optimization request."
     ),
     tags=["cuOpt"],
+    dependencies=[Depends(require_scope(CuoptScope.cuopt_view.value))],
     responses={
         200: {"description": "Solution payload"},
         401: {"description": "Token missing, invalid, or expired"},
+        403: {"description": "Token lacks the `cuopt.view` scope"},
         500: {"description": "Upstream cuOpt solution lookup failed"},
     },
 )
