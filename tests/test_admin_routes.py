@@ -2,42 +2,28 @@
 # Licensed under the Universal Permissive License v 1.0 as shown at https://oss.oracle.com/licenses/upl.
 """Tests for /api/admin/config* routes."""
 
-from datetime import UTC, datetime, timedelta
-
-import jwt
 import pytest
 
 from cuopt_ev_routing_backend.config import settings
 
-SECRET = "test-secret-very-long-string-for-hs256-tests"
+from ._auth_helpers import TEST_ISSUER, install_jwks_stub, make_token
 
 
-def _make_token(role: str = "admin") -> str:
-    now = datetime.now(UTC)
-    return jwt.encode(
-        {
-            "sub": "1",
-            "email": "a@example.com",
-            "name": "A Admin",
-            "role": role,
-            "iat": int(now.timestamp()),
-            "exp": int((now + timedelta(seconds=600)).timestamp()),
-        },
-        SECRET,
-        algorithm="HS256",
-    )
+def _make_admin_token(role: str = "admin") -> str:
+    return make_token(role=role)
 
 
 @pytest.fixture
 def auth_enabled(monkeypatch):
     monkeypatch.setattr(settings, "auth_require_auth", True)
-    monkeypatch.setattr(settings, "auth_jwt_secret", SECRET)
-    monkeypatch.setattr(settings, "auth_jwt_algorithm", "HS256")
-    monkeypatch.setattr(settings, "auth_token_audience", None)
+    monkeypatch.setattr(settings, "auth_trusted_issuers", TEST_ISSUER)
+    monkeypatch.setattr(settings, "auth_jwks_cache_ttl", 3600)
+    monkeypatch.setattr(settings, "auth_token_audience", "cuopt")
+    install_jwks_stub(monkeypatch)
 
 
 def _auth(headers_role: str = "admin") -> dict[str, str]:
-    return {"Authorization": f"Bearer {_make_token(headers_role)}"}
+    return {"Authorization": f"Bearer {_make_admin_token(headers_role)}"}
 
 
 # --- AUTH_REQUIRE_AUTH=false (dev mode) gets synthetic admin --------------
@@ -85,7 +71,7 @@ def test_patch_api_keys_redacts(client, auth_enabled):
     body = resp.json()
     assert body["google_maps_api_key"] == "***"
     assert body["openweathermap_api_key"] == ""
-    assert body["updated_by"] == "a@example.com"
+    assert body["updated_by"] == "u@example.com"
 
 
 def test_patch_api_keys_clear_with_empty_string(client, auth_enabled):

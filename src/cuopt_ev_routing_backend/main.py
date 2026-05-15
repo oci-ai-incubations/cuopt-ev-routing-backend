@@ -7,6 +7,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.openapi.utils import get_openapi
 from fastapi.responses import JSONResponse
 from slowapi import Limiter
 from slowapi.errors import RateLimitExceeded
@@ -30,16 +31,18 @@ def _validate_safety() -> None:
     - Auth disabled outside dev: a missing CUOPT_AUTH_REQUIRE_AUTH env in
       production would silently fall back to the synthetic-admin path and
       serve /api/* unauthenticated.
-    - Auth enabled with no secret: legible 401-and-misconfigured errors
-      mid-request are worse than refusing to start.
+    - Auth enabled with no trusted issuers: legible 401-and-misconfigured
+      errors mid-request are worse than refusing to start.
     """
     if not settings.auth_require_auth and not settings.debug:
         raise RuntimeError(
             "CUOPT_AUTH_REQUIRE_AUTH=false is only permitted when CUOPT_DEBUG=true. "
             "Refusing to start (would serve /api/* unauthenticated in production)."
         )
-    if settings.auth_require_auth and not settings.auth_jwt_secret:
-        raise RuntimeError("CUOPT_AUTH_REQUIRE_AUTH=true requires CUOPT_AUTH_JWT_SECRET to be set.")
+    if settings.auth_require_auth and not settings.auth_trusted_issuers.strip():
+        raise RuntimeError(
+            "CUOPT_AUTH_REQUIRE_AUTH=true requires CUOPT_AUTH_TRUSTED_ISSUERS to be set."
+        )
 
 
 _validate_safety()
@@ -52,14 +55,98 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     yield
 
 
+OPENAPI_TAGS = [
+    {"name": "Health", "description": "Liveness and readiness probes — public."},
+    {
+        "name": "Configuration",
+        "description": "Runtime configuration values consumed by the SPA on boot.",
+    },
+    {
+        "name": "cuOpt",
+        "description": "Proxy routes for the upstream NVIDIA cuOpt VRP solver.",
+    },
+    {
+        "name": "GenAI",
+        "description": "LlamaStack-backed model discovery and chat used for route explanations.",
+    },
+    {
+        "name": "Weather",
+        "description": "OpenWeatherMap proxy with mock fallback for weather-aware routing.",
+    },
+    {
+        "name": "Admin",
+        "description": "Admin-only runtime configuration of API keys and feature flags.",
+    },
+]
+
+
+_OPENAPI_DESCRIPTION = (
+    "FastAPI backend for the cuOpt EV routing accelerator pack. Proxies the "
+    "upstream NVIDIA cuOpt VRP solver, LlamaStack chat, and OpenWeatherMap, and "
+    "owns the admin-managed `instance_settings` runtime configuration. All "
+    "`/api/*` routes require an RS256 JWT issued by `accelerator-pack-auth-service`."
+)
+
+
 app = FastAPI(
     title=settings.app_name,
     version=__version__,
+    description=_OPENAPI_DESCRIPTION,
     docs_url="/api/docs" if settings.debug else None,
     redoc_url="/api/redoc" if settings.debug else None,
     openapi_url="/api/openapi.json" if settings.debug else None,
+    contact={
+        "name": "OCI AI Accelerator Team",
+        "url": "https://github.com/oci-ai-incubations/cuopt-ev-routing-backend",
+    },
+    license_info={
+        "name": "Universal Permissive License v1.0",
+        "url": "https://oss.oracle.com/licenses/upl",
+    },
+    servers=[
+        {"url": "http://localhost:8080", "description": "Local development"},
+    ],
+    openapi_tags=OPENAPI_TAGS,
     lifespan=lifespan,
 )
+
+
+def custom_openapi() -> dict:
+    """Return the OpenAPI schema with a bearerAuth security scheme applied globally.
+
+    Public endpoints opt out per-route by passing
+    ``openapi_extra={"security": []}`` in their decorator; everything else
+    inherits the default Bearer requirement so the Swagger UI lock icon
+    reflects reality.
+    """
+    if app.openapi_schema:
+        return app.openapi_schema
+    schema = get_openapi(
+        title=app.title,
+        version=app.version,
+        description=app.description,
+        routes=app.routes,
+        tags=OPENAPI_TAGS,
+        servers=app.servers,
+        contact=app.contact,
+        license_info=app.license_info,
+    )
+    schema.setdefault("components", {})["securitySchemes"] = {
+        "bearerAuth": {
+            "type": "http",
+            "scheme": "bearer",
+            "bearerFormat": "JWT",
+            "description": (
+                "JWT access token issued by `accelerator-pack-auth-service` (`POST /auth/login`)."
+            ),
+        }
+    }
+    schema["security"] = [{"bearerAuth": []}]
+    app.openapi_schema = schema
+    return schema
+
+
+app.openapi = custom_openapi
 
 origins = [o.strip() for o in settings.allowed_origins.split(",") if o.strip()]
 # CORS spec forbids allow_credentials=true with wildcard origins; browsers
@@ -110,13 +197,34 @@ app.include_router(weather_routes.router)
 app.include_router(admin_routes.router)
 
 
-@app.get("/healthz")
+@app.get(
+    "/healthz",
+    summary="Liveness probe",
+    description=(
+        "Kubernetes liveness probe. Returns `{status: ok}` whenever the process "
+        "is running. Public — no authentication required."
+    ),
+    tags=["Health"],
+    responses={200: {"description": "Process is alive"}},
+    openapi_extra={"security": []},
+)
 def healthz() -> dict[str, str]:
     """Liveness probe — public, no auth required."""
     return {"status": "ok"}
 
 
-@app.get("/readyz")
+@app.get(
+    "/readyz",
+    summary="Readiness probe",
+    description=(
+        "Kubernetes readiness probe. Returns `{status: ok}` once the lifespan "
+        "has completed `alembic upgrade head` and the app is ready to serve "
+        "traffic. Public — no authentication required."
+    ),
+    tags=["Health"],
+    responses={200: {"description": "Service is ready"}},
+    openapi_extra={"security": []},
+)
 def readyz() -> dict[str, str]:
     """Readiness probe — public, no auth required."""
     return {"status": "ok"}

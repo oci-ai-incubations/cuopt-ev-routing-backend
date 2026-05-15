@@ -32,14 +32,30 @@ class Settings(BaseSettings):
     # Weather provider
     openweathermap_api_key: str = Field("", json_schema_extra={"sensitive": True})
 
-    # Auth-service JWT validation (HS256). Fail-closed defaults: production
-    # deployments must opt out explicitly. main._validate_safety() rejects
+    # Auth-service JWT validation (RS256 via JWKS). Tokens are verified locally
+    # by fetching each trusted issuer's JWKS and looking the token's `kid` up
+    # against the cache. Fail-closed defaults: main._validate_safety() rejects
     # auth_require_auth=False unless debug=True, and rejects auth_require_auth=True
-    # with an empty secret.
-    auth_jwt_secret: str = Field("", json_schema_extra={"sensitive": True})  # noqa: S105 — empty default
-    auth_jwt_algorithm: str = "HS256"
+    # with an empty trusted-issuers list.
+    auth_trusted_issuers: str = ""
+    auth_jwks_cache_ttl: int = 3600
     auth_require_auth: bool = True
-    auth_token_audience: str | None = None
+    # RFC 9068 §4 — every access token MUST be issued for an explicit audience
+    # and every verifier MUST check it. The default ``cuopt`` matches the value
+    # the auth-service cuopt pack model stamps into its tokens; federated IdPs
+    # (Oracle IDCS, Microsoft Entra) typically mint resource-URL audiences,
+    # which can be added alongside the auth-service value as a comma-separated
+    # list. PyJWT accepts any element of the list as a valid ``aud`` match.
+    auth_token_audience: str = "cuopt"  # noqa: S105 — audience identifier, not a secret
+
+    # In-cluster JWKS fetch override. When auth-service is co-located with this
+    # pack BE, fetching JWKS via the public ingress means a wasted hop and
+    # (in dev) a self-signed-cert TLS error. When set, JWKS for tokens whose
+    # `iss` claim matches auth_local_issuer_url is fetched from
+    # auth_local_jwks_url instead. The token still advertises the public iss;
+    # only the fetch URL changes. Empty in standalone-no-cluster setups.
+    auth_local_issuer_url: str = ""
+    auth_local_jwks_url: str = ""
 
     # CORS. Empty default forces operators to set CUOPT_ALLOWED_ORIGINS explicitly.
     # main.py disables allow_credentials when any wildcard ("*") is in the list —
@@ -55,6 +71,17 @@ class Settings(BaseSettings):
     oracle_connection_string: str = Field("", json_schema_extra={"sensitive": True})
     oracle_user: str = ""
     oracle_password: str = Field("", json_schema_extra={"sensitive": True})  # noqa: S105
+
+    @property
+    def auth_token_audience_list(self) -> list[str]:
+        """Parse ``auth_token_audience`` (comma-separated) into a list of allowed audiences.
+
+        PyJWT's ``audience=`` parameter accepts a list; if any element matches
+        the token's ``aud`` claim, validation passes. This lets one pack BE
+        trust tokens minted with different audience values (auth-service stamps
+        ``cuopt``; an IDCS app might stamp ``https://cuopt.example.com/api/``).
+        """
+        return [aud.strip() for aud in self.auth_token_audience.split(",") if aud.strip()]
 
 
 settings = Settings()
